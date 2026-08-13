@@ -5,25 +5,19 @@ project(quickjab C)
 #  a pinned vendored snapshot under qjs/; dog+abc are the in-tree dog/
 #  submodule (libdog), the API suite is the in-tree test/ submodule (shared
 #  with jab — its jsrcpack.js case requires `../jsrcpack.js`, so the packer
-#  pair jsrcpack.js/.S sits at the repo root in BOTH).  The jab tree is
-#  still referenced READ-ONLY for lsan.supp.
+#  pair jsrcpack.js/.S sits at the repo root in BOTH).  STANDALONE: the jab
+#  tree is not referenced at all.
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-strict-aliasing")
 set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 set(DOG_BIN_DIR ${CMAKE_BINARY_DIR}/bin)
 include(CTest)
 
-if(NOT JAB_DIR)
-    set(JAB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../jab)
-endif()
 #  The API suite is the in-tree test/ submodule, SHARED with jab (same cases,
 #  same names): jab mounts the very same repo at its test/.
 set(JAB_TEST ${CMAKE_CURRENT_SOURCE_DIR}/test)
 set(DOG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dog)
 set(ABC_DIR ${DOG_DIR}/abc)
-if(NOT IS_DIRECTORY ${JAB_DIR})
-    message(FATAL_ERROR "the jab tree is missing: expected it at ${JAB_DIR}")
-endif()
 
 #  curl is a hard dependency of the build (abc carries CURL.c); named here so a
 #  missing libcurl-dev shows on the first lines of configure output.
@@ -158,7 +152,7 @@ add_test(NAME JABCweave COMMAND quickjab ${JAB_TEST}/weave.js)
 if(EXISTS ${JAB_TEST}/igno.js)
     add_test(NAME JABCigno COMMAND quickjab ${JAB_TEST}/igno.js)
     set_tests_properties(JABCigno PROPERTIES
-        ENVIRONMENT "LSAN_OPTIONS=suppressions=${JAB_DIR}/lsan.supp")
+        ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 endif()
 # JAB-008: binding-boundary BASS rewind — a 256KB fold x1500 in one process
 # (pre-fix the un-rewound arena drained at ~iter 960: "out full?").
@@ -178,7 +172,7 @@ add_test(NAME JABCnetGrow COMMAND quickjab ${JAB_TEST}/netgrow.js)
 if(EXISTS ${CMAKE_SOURCE_DIR}/test/js/get/zip.js)
     add_test(NAME JABCzip COMMAND quickjab ${CMAKE_SOURCE_DIR}/test/js/get/zip.js)
     set_tests_properties(JABCzip PROPERTIES
-        ENVIRONMENT "LSAN_OPTIONS=suppressions=${JAB_DIR}/lsan.supp")
+        ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 endif()
 
 # Script argv reaches JS: run a generated script with a tail of args and grep the
@@ -225,4 +219,4 @@ add_test(NAME JABCleakLoop
 # quickjs engine frees everything on JS_FreeRuntime, so the file is inherited
 # only to keep the property set identical to jab's (JABCtestCpp is absent).
 set_tests_properties(JABCe2e JABCheap JABChash JABCmmap JABCstat JABCreaddir JABCsha JABChit JABCindex JABChunk JABCtok JABCuri JABCcodec JABCrequire JABCpack JABCpackidx JABCrepack JABCgit JABCulog JABCulogBook JABCweave JABCbass JABCansi JABCconsole JABCtty JABCpol JABCfsw JABCnet JABCargv JABCrequireJsrc JABCjsrcPack PROPERTIES
-    ENVIRONMENT "LSAN_OPTIONS=suppressions=${JAB_DIR}/lsan.supp")
+    ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
