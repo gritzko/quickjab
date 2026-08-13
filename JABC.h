@@ -163,6 +163,9 @@ ok64 JABCInstallNet(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallFsw(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallJsrcPack(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallRequire(JSContext *ctx, JSValueConst global);
+//  QJAB-001: was this binary built with a jsrc bundle (jsrcpack.c published
+//  the bytes)?  A packed build takes its entry from the bundle, not from argv.
+b8 JABCJsrcPacked(void);
 
 //  Teardown twins: pol drops its protected router refs while the context is
 //  still alive; io closes what the JS side no longer owns (after the context).

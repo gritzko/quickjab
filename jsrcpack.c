@@ -6,13 +6,23 @@
 //  -DQUICKJAB_JSRC_PACK=ON).  This accessor is the whole native side: it
 //  publishes the bytes as the global `jsrcpack` (a no-copy Uint8Array over the
 //  binary's own rodata), and the require bootstrap (require.c) does the rest —
-//  cache probe, inflate, untar, and the append of the extracted dir as the LAST
-//  jsrc stack entry (the floor).  No pack -> no .S, no symbol, no global, no
-//  floor: jab as it was.
+//  cache probe, inflate, untar, and the pin of the extracted dir as THE require
+//  base (QJAB-002: bundle-only, no climb at all).  No pack -> no .S, no symbol,
+//  no global, no bundle: jab as it was.
 #ifdef JABC_JSRC_PACK
 extern const unsigned char JABC_JSRC_PACK_HEAD[];
 extern const unsigned char JABC_JSRC_PACK_TAIL[];
 #endif
+
+//  QJAB-001: does the image carry bundle bytes?  Asked BEFORE the installs
+//  (main.c parses argv first), so it reads the .incbin span, not a flag.
+b8 JABCJsrcPacked(void) {
+#ifdef JABC_JSRC_PACK
+    return JABC_JSRC_PACK_TAIL > JABC_JSRC_PACK_HEAD;
+#else
+    return NO;
+#endif
+}
 
 ok64 JABCInstallJsrcPack(JSContext *ctx, JSValueConst global) {
     (void)ctx;

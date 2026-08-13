@@ -275,6 +275,9 @@ int main(int argc, char **argv) {
 
     char *eval_code = NULL;
     char *script_file = NULL;
+    //  QJAB-001: a build carrying a jsrc bundle has NO script route — its
+    //  main.js is the entry, so the first positional is an ARG, not a script.
+    b8 packed = JABCJsrcPacked();
     //  Index of the first token after the script path (the argv "tail" exposed
     //  to JS as `args`).  Stays at argc when there is no script file.
     int tail = argc;
@@ -289,8 +292,10 @@ int main(int argc, char **argv) {
             }
             eval_code = argv[++i];
         } else {
-            script_file = argv[i];
-            tail = i + 1;
+            //  QJAB-001: packed — the word stays IN the tail (no script path to
+            //  splice), so main.js sees every CLI word at process.argv[2:].
+            tail = packed ? i : i + 1;
+            if (!packed) script_file = argv[i];
             break;
         }
     }
@@ -303,31 +308,19 @@ int main(int argc, char **argv) {
     int rc = 0;
     if (eval_code != NULL && !JABCRun(eval_code)) rc = 1;
 
-    //  JAB: the first positional decides the entry shape.  A `.js` first arg is
-    //  a SCRIPT: an EXPLICIT path (/abs, ./rel, ../up) runs the file directly
-    //  via global eval (require rebased to its own dir); a bare/relative `.js`
-    //  (e.g. `foo.js`, `jsrc/main.js`) resolves via the upward jsrc/-scan
-    //  (`__runScript`).  ANYTHING else — a verb, a `scheme:` URI, a non-.js
-    //  path, or no arg at all — routes to jsrc/main.js (`__main`) with the
-    //  user's tokens passed through as-is at argv[2:].
+    //  QJAB-002: the first positional decides the entry shape.  A `.js` first arg
+    //  is THE SCRIPT (mode 2) — a path off the cwd, run directly via global eval,
+    //  with its OWN dir pinned as the one require base; no jsrc/ is consulted.
+    //  ANYTHING else — a verb, a `scheme:` URI, a non-.js path, or no arg at all
+    //  — routes to main.js (`__main`) with the user's tokens passed through as-is
+    //  at argv[2:].  QJAB-001: a PACKED build never takes this branch
+    //  (script_file is NULL) — the bundle's main.js runs.
     if (rc == 0) {
         if (script_file != NULL && JABCEndsWithJs(script_file) &&
             !JABCHasScheme(script_file)) {
-            b8 explicit_path =
-                script_file[0] == '/' ||
-                (script_file[0] == '.' && script_file[1] == '/') ||
-                (script_file[0] == '.' && script_file[1] == '.' &&
-                 script_file[2] == '/');
             JABCSetGlobal("__mainSpec", JSOfCString(script_file));
-            if (explicit_path) {
-                //  Bind the top-level require to the script's own dir so a
-                //  sibling `require("./lib/x.js")` resolves script-relative.
-                if (!JABCRun("__rebaseRequire(__mainSpec)") ||
-                    !JABCRunFile(script_file))
-                    rc = 1;
-            } else if (!JABCRun("__runScript(__mainSpec)")) {
+            if (!JABCRun("__pinScript(__mainSpec)") || !JABCRunFile(script_file))
                 rc = 1;
-            }
         } else if (eval_code == NULL) {
             //  verb / scheme:URI / non-.js path / bare `jab` → the loop.
             if (!JABCRun("__main()")) rc = 1;
