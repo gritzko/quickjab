@@ -4,6 +4,7 @@
 //    git.open(path)        -> handle   (a repo root, a .git dir, or a gitfile)
 //    git.getHex(h, hexlet) -> {type, bytes} | null   (6..40 hex, ambiguous throws)
 //    git.getSafe(h, sha40) -> {type, bytes} | null   (re-hashed before it returns)
+//    git.getTreeDiff(h, a, b) -> Uint8Array | null   (DOG-030, tree-formatted)
 //    git.close(h)
 //
 //  The store itself is dog/git/ODB: one flat struct that maps the pack pairs,
@@ -15,6 +16,8 @@
 
 #include "JABC.h"
 #include "abc/HEX.h"
+#include "abc/PRO.h"  //  DOG-030: the call/done flow the tree diff runs in
+#include "dog/DOG.h"
 #include "dog/git/GIT.h"
 #include "dog/git/ODB.h"
 #include "dog/git/SHA1.h"
@@ -187,6 +190,60 @@ static JSValue jgit_read(JSContext *ctx, int argc, JSValueConst *argv,
 static JABC_FN(JABCgitGet) { return jgit_read(ctx, argc, argv, NO); }
 static JABC_FN(JABCgitGetSafe) { return jgit_read(ctx, argc, argv, YES); }
 
+//  DOG-030: BOTH trees are read here, off the same handle, and diffed into
+//  BASS; `have` goes NO when the NEW side names no readable tree (-> null).
+static ok64 jgit_tree_diff(odb *o, u8csc ha, u8csc hb, u8csp out, b8 *have) {
+    sane(o != NULL && out != NULL && have != NULL);
+    a_cstr(zero40, "0000000000000000000000000000000000000000");
+    *have = NO;
+    out[0] = out[1] = NULL;
+    u8cs ta = {}, tb = {};
+    sha1 sha = {};
+    u8 type = 0;
+    if (!u8csEq(ha, zero40)) {  //  an all-zero name spells the empty tree
+        ok64 r = ODBHex(o, ha, &sha, ta, &type);
+        if (r != OK && r != NODATA) return r;
+        if (r != OK || type != DOG_OBJ_TREE) done;
+    }
+    a_ren(anew, ta);  //  the OLD read reuses the very same store scratch
+    if (!u8csEq(hb, zero40)) {
+        ok64 r = ODBHex(o, hb, &sha, tb, &type);
+        if (r != OK && r != NODATA) return r;
+        //  an unreadable OLD side reads as the empty tree: all of NEW is new
+        if (r != OK || type != DOG_OBJ_TREE) tb[0] = tb[1] = NULL;
+    }
+    size_t cap = 2 * ((size_t)u8csLen(anew) + (size_t)u8csLen(tb)) + 64;
+    a_carve(u8, buf, cap);
+    call(GITTreeDiff, buf, anew, tb);
+    a_dup(u8c, res, u8bDataC(buf));
+    u8csMv(out, res);
+    *have = YES;
+    done;
+}
+
+//  _git_tree_diff(pin, sha40A, sha40B) -> Uint8Array | null.  Marshalling
+//  only: two names in, the dog/git diff's bytes out (null = no such tree).
+static JABC_FN(JABCgitTreeDiff) {
+    if (argc < 3) JABC_THROW("git.getTreeDiff(h, sha40A, sha40B)");
+    jabc_gits *s = JABCGitOf(ctx, argv[0]);
+    if (s == NULL) {
+        if (JS_HasException(ctx)) JS_FreeValue(ctx, JS_GetException(ctx));
+        JABC_THROW(ODBWords(ODBCLOSED));
+    }
+    char ha[64], hb[64];
+    if (!jgit_str(ha, sizeof(ha), ctx, argv[1]) ||
+        !jgit_str(hb, sizeof(hb), ctx, argv[2]))
+        JABC_THROW("git: the object name must be a hex string");
+    u8cs sa = {(u8 const *)ha, (u8 const *)ha + strlen(ha)};
+    u8cs sb = {(u8 const *)hb, (u8 const *)hb + strlen(hb)};
+    u8cs diff = {};
+    b8 have = NO;
+    ok64 r = jgit_tree_diff(&s->o, sa, sb, diff, &have);
+    if (r != OK) JABC_THROW(JABCGitSay(&s->o, r));
+    if (!have) return JS_NULL;
+    return JABCBlob(ctx, diff[0], (size_t)u8csLen(diff));
+}
+
 //  _git_close(pin) — unmap every pack, free the scratch, retire the slot.
 static JABC_FN(JABCgitClose) {
     if (argc < 1) JABC_THROW("git.close(h)");
@@ -221,6 +278,9 @@ static const char *JABC_GIT_JS =
     "    //  the whole 40 -> {type, bytes} | null, re-hashed before it "
     "returns.\n"
     "    getSafe(sha40) { return abc._git_get_safe(this._live(), sha40); }\n"
+    "    //  DOG-030: the paired diff of tree `a` against tree `b`, in git tree\n"
+    "    //  FORMAT (git.tree(buf) reads it); an all-zero name = the empty tree.\n"
+    "    getTreeDiff(a, b) { return abc._git_tree_diff(this._live(), a, b); }\n"
     "    close() {\n"
     "      if (this._pin !== null) { abc._git_close(this._pin); this._pin = "
     "null; }\n"
@@ -230,6 +290,7 @@ static const char *JABC_GIT_JS =
     "  git.open = (path) => new GitOdb(abc._git_open(path));\n"
     "  git.getHex = (h, hexlet) => h.getHex(hexlet);\n"
     "  git.getSafe = (h, sha40) => h.getSafe(sha40);\n"
+    "  git.getTreeDiff = (h, a, b) => h.getTreeDiff(a, b);\n"
     "  git.close = (h) => h.close();\n"
     "  git.GitOdb = GitOdb;\n"
     "})(this);\n";
@@ -240,6 +301,7 @@ ok64 JABCInstallGit(JSContext *ctx, JSValueConst global) {
     JABC_API_FN(abc, "_git_open", JABCgitOpen);
     JABC_API_FN(abc, "_git_get", JABCgitGet);
     JABC_API_FN(abc, "_git_get_safe", JABCgitGetSafe);
+    JABC_API_FN(abc, "_git_tree_diff", JABCgitTreeDiff);
     JABC_API_FN(abc, "_git_close", JABCgitClose);
     JABC_API_END(abc);
     JABCExecute(JABC_GIT_JS);
