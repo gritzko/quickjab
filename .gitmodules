@@ -1,0 +1,3 @@
+[submodule "dog"]
+	path = dog
+	url = https://github.com/gritzko/libdog.git

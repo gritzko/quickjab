@@ -1,0 +1,8 @@
+#   QuickJAB: QuickJS based JS runtime
+
+<img align=right width="25%" src="./quickjab.jpg"/>
+An anti-bloat [QuickJS][q] based JavaScript runtime with [libdog][d] bindings.
+Mostly revision-control oriented.
+
+[d]: https://github.com/gritzko/libdog
+[q]: https://github.com/quickjs-ng/quickjs
