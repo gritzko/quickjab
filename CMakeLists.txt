@@ -3,8 +3,10 @@ project(quickjab C)
 
 #  JAB-036: the plain-C port of the jab runtime onto quickjs-ng.  The engine is
 #  a pinned vendored snapshot under qjs/; dog+abc are the in-tree dog/
-#  submodule (libdog).  The jab tree is still referenced READ-ONLY for the
-#  shared API suite, jsrcpack.js/.S and lsan.supp.
+#  submodule (libdog), the API suite is the in-tree test/ submodule (shared
+#  with jab — its jsrcpack.js case requires `../jsrcpack.js`, so the packer
+#  pair jsrcpack.js/.S sits at the repo root in BOTH).  The jab tree is
+#  still referenced READ-ONLY for lsan.supp.
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-strict-aliasing")
 set(CMAKE_EXPORT_COMPILE_COMMANDS on)
@@ -14,7 +16,9 @@ include(CTest)
 if(NOT JAB_DIR)
     set(JAB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../jab)
 endif()
-set(JAB_TEST ${JAB_DIR}/test)
+#  The API suite is the in-tree test/ submodule, SHARED with jab (same cases,
+#  same names): jab mounts the very same repo at its test/.
+set(JAB_TEST ${CMAKE_CURRENT_SOURCE_DIR}/test)
 set(DOG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dog)
 set(ABC_DIR ${DOG_DIR}/abc)
 if(NOT IS_DIRECTORY ${JAB_DIR})
@@ -95,13 +99,15 @@ if(JAB_JSRC AND QUICKJAB_JSRC_PACK)
     #  The packer runs as an EXPLICIT path and requires nothing: a build box
     #  has no jsrc/ to climb to.
     add_custom_command(OUTPUT ${JAB_PACK}
-        COMMAND quickjab_boot ${JAB_DIR}/jsrcpack.js ${JAB_JSRC_DIR} ${JAB_PACK}
-        DEPENDS quickjab_boot ${JAB_DIR}/jsrcpack.js ${JAB_JSRC_FILES}
+        COMMAND quickjab_boot ${CMAKE_CURRENT_SOURCE_DIR}/jsrcpack.js
+            ${JAB_JSRC_DIR} ${JAB_PACK}
+        DEPENDS quickjab_boot ${CMAKE_CURRENT_SOURCE_DIR}/jsrcpack.js
+            ${JAB_JSRC_FILES}
         COMMENT "JAB-035: packing ${JAB_JSRC_DIR}")
     add_custom_target(quickjab_jsrc_pack DEPENDS ${JAB_PACK})
-    target_sources(quickjab PRIVATE ${JAB_DIR}/jsrcpack.S)
+    target_sources(quickjab PRIVATE jsrcpack.S)
     add_dependencies(quickjab quickjab_jsrc_pack)
-    set_source_files_properties(${JAB_DIR}/jsrcpack.S PROPERTIES
+    set_source_files_properties(jsrcpack.S PROPERTIES
         OBJECT_DEPENDS ${JAB_PACK})
     target_compile_definitions(quickjab PRIVATE
         JABC_JSRC_PACK JABC_JSRC_PACK_FILE="${JAB_PACK}")
