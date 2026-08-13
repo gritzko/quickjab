@@ -133,6 +133,8 @@ add_test(NAME JABCchdir COMMAND quickjab ${JAB_TEST}/chdir.js)
 add_test(NAME JABCsha COMMAND quickjab ${JAB_TEST}/sha.js)
 add_test(NAME JABChit COMMAND quickjab ${JAB_TEST}/hit.js)
 add_test(NAME JABCindex COMMAND quickjab ${JAB_TEST}/index.js)
+# DOG-032: the sized memtable — same rows, same answers at 4 KiB and 1 MiB.
+add_test(NAME JABCpupMem COMMAND quickjab ${JAB_TEST}/pupmem.js)
 add_test(NAME JABChunk COMMAND quickjab ${JAB_TEST}/hunk.js)
 add_test(NAME JABCtok COMMAND quickjab ${JAB_TEST}/tok.js)
 add_test(NAME JABCuri COMMAND quickjab ${JAB_TEST}/uri.js)
@@ -218,5 +220,5 @@ add_test(NAME JABCleakLoop
 # jab's group suppresses JavaScriptCore's lazily-initialised singletons; the
 # quickjs engine frees everything on JS_FreeRuntime, so the file is inherited
 # only to keep the property set identical to jab's (JABCtestCpp is absent).
-set_tests_properties(JABCe2e JABCheap JABChash JABCmmap JABCstat JABCreaddir JABCsha JABChit JABCindex JABChunk JABCtok JABCuri JABCcodec JABCrequire JABCpack JABCpackidx JABCrepack JABCgit JABCulog JABCulogBook JABCweave JABCbass JABCansi JABCconsole JABCtty JABCpol JABCfsw JABCnet JABCargv JABCrequireJsrc JABCjsrcPack PROPERTIES
+set_tests_properties(JABCe2e JABCheap JABChash JABCmmap JABCstat JABCreaddir JABCsha JABChit JABCindex JABCpupMem JABChunk JABCtok JABCuri JABCcodec JABCrequire JABCpack JABCpackidx JABCrepack JABCgit JABCulog JABCulogBook JABCweave JABCbass JABCansi JABCconsole JABCtty JABCpol JABCfsw JABCnet JABCargv JABCrequireJsrc JABCjsrcPack PROPERTIES
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")

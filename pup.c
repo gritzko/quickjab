@@ -4,9 +4,10 @@
 //  does nothing but marshalling; the ladder never crosses the boundary.
 //
 //  Leaves (per lane kv64 / wh128 / u64):
-//    _pup_<lane>_open(dir, ext, mode)      -> handle (a small integer)
+//    _pup_<lane>_open(dir, ext, mode, mem) -> handle (a small integer)
 //    _pup_<lane>_put(h, dir, ext, k[, v])  -> undefined  (rw only)
-//    _pup_<lane>_commit(h, dir, ext)       -> undefined  (rw only)
+//    _pup_<lane>_commit(h, dir, ext, dur)  -> undefined  (rw only)
+//    _pup_mem(h)                           -> memtable row capacity (any lane)
 //    _pup_<lane>_get(h, k)                 -> val | undefined (newest wins)
 //    _pup_<lane>_range(h, lo, hi, cb)      -> undefined  (cb "enough" stops)
 //    _pup_<lane>_seek(h, k) / _next(h)     -> merged pull cursor, ONE per handle
@@ -55,12 +56,21 @@ typedef struct {
     Bkv64 pups;
     b8 live;
     b8 rw;
+    //  DOG-032: the memtable's size, fixed at open — `pages` whole OS pages
+    //  going down to dog, `mem` the row capacity JS reads back as `idx.mem`.
+    u32 pages;
+    u64 mem;
 } pupslot;
 
 static pupslot JABC_PUPS[PUP_MAX_OPEN];
 
 //  The ONE plain-words error for a stack past the cap (never a bare C code).
 #define PUP_TOOMANY "too many index runs: drop them and re-derive the index"
+
+//  DOG-032: a memtable is one mapping and one collapse scratch, so 256 MiB of
+//  pages is the damage backstop — a sane bulk run asks for one or two.
+#define PUP_MAX_MEM_PAGES (1UL << 16)
+#define PUP_TOOBIG "the index memtable is too big: ask for fewer rows"
 
 //  Resolve argv[0] to a live slot, or NULL (the caller throws).
 static pupslot *JABCPupSlot(JSContext *ctx, int argc, JSValueConst *argv) {
@@ -138,6 +148,14 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
 #define PUP_KEYEQ_wh128 (pos->key == needle.key)
 #define PUP_KEYEQ_u64 (*pos == needle)
 
+//  DOG-032: PUP_STABLE_x — the lane needs the STABLE sort at ANY size.  kv64Z
+//  is KEY-only, so equal rows differ and newest-wins rides arrival order;
+//  wh128Z / u64Z totally order the row, so equal rows are identical and the
+//  QSORTx introsort + sDedup say exactly what the insertion sort would.
+#define PUP_STABLE_kv64 YES
+#define PUP_STABLE_wh128 NO
+#define PUP_STABLE_u64 NO
+
 //  --- per-lane leaves -------------------------------------------------------
 #define PUP_LEAVES(L)                                                          \
     /*  the lane's typed sort/dedup/collapse: STABLE insertion sort + keep-last\
@@ -153,8 +171,14 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
                 break;                                                         \
             }                                                                  \
         if (!clean) {                                                          \
-            QSORT##L##InSort(dh, de);                                          \
             L##s d = {dh, de};                                                 \
+            /*  DOG-032: one page of DATA keeps the stable insertion sort —    \
+                a big memtable takes QSORTx's introsort (see PUP_STABLE_x) */  \
+            if (PUP_STABLE_##L ||                                              \
+                (size_t)(de - dh) * sizeof(L) <= FILESysPage())                \
+                QSORT##L##InSort(dh, de);                                      \
+            else                                                               \
+                L##sSort(d);                                                   \
             L##sDedup(d);                                                      \
             call(u8bShed, mem, (size_t)(de - d[1]) * sizeof(L));               \
         }                                                                      \
@@ -163,7 +187,9 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
             call(u8bUsedAll, mem);                                             \
             done;                                                              \
         }                                                                      \
-        a_carve(L, scr, DOG_PUP_MEM_BYTES / sizeof(L));                        \
+        /*  DOG-032: the scratch is the LIVE mapping's size, not a constant —  \
+            the memtable is whatever the open sized it to. */                  \
+        a_carve(L, scr, (size_t)(u8bTerm(mem) - (u8 *)mem[0]) / sizeof(L));    \
         L##cs runs[2] = {{(L const *)mem[0], (L const *)mem[1]},               \
                          {(L const *)mem[1], (L const *)mem[2]}};              \
         L##css hp = {runs, runs + 2};                                          \
@@ -224,9 +250,19 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
     }                                                                          \
                                                                                \
     static JABC_FN(jpup_##L##_open) {                                          \
-        if (argc < 2) JABC_THROW("_pup_" #L "_open(dir, ext, mode)");          \
+        if (argc < 2) JABC_THROW("_pup_" #L "_open(dir, ext, mode, mem)");     \
         PUP_PATHS(0);                                                          \
         b8 rw = YES;                                                           \
+        /*  DOG-032: `mem` is the wanted ROW capacity; dog counts PAGES, so    \
+            round the rows UP to whole pages and keep what that really is. */  \
+        u64 rows = 0;                                                          \
+        if (argc >= 4 && !JS_IsUndefined(argv[3]) &&                           \
+            !JABCu64Of(&rows, ctx, argv[3]))                                   \
+            JABC_THROW("the index memtable size is a row count");              \
+        size_t page = FILESysPage();                                           \
+        u64 pages = (rows * sizeof(L) + page - 1) / page;                      \
+        if (pages == 0) pages = DOG_PUP_MEM_PAGES;                             \
+        if (pages > PUP_MAX_MEM_PAGES) JABC_THROW(PUP_TOOBIG);                 \
         if (argc >= 3 && JS_IsString(argv[2])) {                               \
             size_t mn = 0;                                                     \
             const char *mode = JS_ToCStringLen(ctx, &mn, argv[2]);             \
@@ -254,6 +290,8 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         }                                                                      \
         s->live = YES;                                                         \
         s->rw = rw;                                                            \
+        s->pages = (u32)pages;                                                 \
+        s->mem = (u64)(pages * page / sizeof(L));                              \
         JABC_PUPCURN_##L[h] = 0;                                               \
         return JS_NewFloat64(ctx, (double)h);                                  \
     }                                                                          \
@@ -267,8 +305,8 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!PUP_RD_##L(&row, ctx, argv[3])) JABC_FAIL;                        \
         PUP_PUTVAL_##L;                                                        \
         u8cs rec = {(u8c *)&row, (u8c *)(&row + 1)};                           \
-        ok64 o = DOGPupPut(s->pups, $path(dirp), $path(extp), rec,             \
-                           &JABC_PUP_LANE_##L);                                \
+        ok64 o = DOGPupPutMem(s->pups, $path(dirp), $path(extp), rec,          \
+                              &JABC_PUP_LANE_##L, s->pages);                   \
         if (o == HITTOOMANY) JABC_THROW(PUP_TOOMANY);                          \
         if (o != OK) JABC_THROW("cannot write to the index");                  \
         JABC_UNDEF;                                                            \
@@ -276,11 +314,17 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
                                                                                \
     static JABC_FN(jpup_##L##_commit) {                                        \
         pupslot *s = JABCPupSlot(ctx, argc, argv);                             \
-        if (!s || argc < 3) JABC_THROW("_pup_" #L "_commit(h, dir, ext)");     \
+        if (!s || argc < 3)                                                    \
+            JABC_THROW("_pup_" #L "_commit(h, dir, ext[, durable])");          \
         if (!s->rw) JABC_THROW("this index is open read-only");                \
         PUP_PATHS(1);                                                          \
-        ok64 o = DOGPupCommit(s->pups, $path(dirp), $path(extp),               \
-                              &JABC_PUP_LANE_##L);                             \
+        /*  DOG-032: a bulk run seals with durable=false and ends in ONE       \
+            durable commit; absent (jab's binding) IS durable. */              \
+        b8 durable = YES;                                                      \
+        if (argc >= 4 && JS_IsBool(argv[3]))                                   \
+            durable = (b8)(JS_ToBool(ctx, argv[3]) != 0);                      \
+        ok64 o = DOGPupCommitAs(s->pups, $path(dirp), $path(extp),             \
+                                &JABC_PUP_LANE_##L, durable);                  \
         if (o == HITTOOMANY) JABC_THROW(PUP_TOOMANY);                          \
         if (o != OK) JABC_THROW("cannot commit the index");                    \
         JABC_UNDEF;                                                            \
@@ -443,6 +487,14 @@ PUP_LEAVES(kv64)
 PUP_LEAVES(wh128)
 PUP_LEAVES(u64)
 
+//  DOG-032: the memtable's row capacity — ONE leaf for every lane, since the
+//  slot holds it and the rows were already page-rounded at open.
+static JABC_FN(jpup_mem) {
+    pupslot *s = JABCPupSlot(ctx, argc, argv);
+    if (!s) JABC_THROW("_pup_mem(h)");
+    return JS_NewFloat64(ctx, (double)s->mem);
+}
+
 #define PUP_REG(L)                                                \
     JABC_API_FN(abc, "_pup_" #L "_open", jpup_##L##_open);          \
     JABC_API_FN(abc, "_pup_" #L "_put", jpup_##L##_put);            \
@@ -461,6 +513,7 @@ ok64 JABCInstallPup(JSContext *ctx, JSValueConst global) {
     PUP_REG(kv64);
     PUP_REG(wh128);
     PUP_REG(u64);
+    JABC_API_FN(abc, "_pup_mem", jpup_mem);
     JABC_API_END(abc);
     return OK;
 }
