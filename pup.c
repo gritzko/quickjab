@@ -219,33 +219,72 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         into[0] = (u8 *)dst[0];                                                \
         done;                                                                  \
     }                                                                          \
+    /*  DOG-035: `row` is the ToC opt-in — a fixed-width sorted lane, so its   \
+        runs carry a sparse page index and every read clips it off. */         \
     static dogpuplane const JABC_PUP_LANE_##L = {jpup_sync_##L,                \
-                                                 jpup_merge_##L};              \
+                                                 jpup_merge_##L,               \
+                                                 (u32)sizeof(L)};              \
+    /*  DOG-035: the needle's page — cell `i` covers page `i`, so it is the    \
+        LAST cell not greater than the needle.  The ToC step runs ONCE per run \
+        per lookup, so cell `i+1` is tested there too: a cell IS a whole record\
+        and IS page i+1's first record, so a key match is THE answer, returned \
+        from the ToC.  `out` is then exactly page `i`, never wider; a run with \
+        no ToC keeps its whole range. */                                       \
+    static L const *jpup_page_##L(L##cs out, L##csc run, L##csc toc,           \
+                                  L const *key) {                              \
+        L##csMv(out, run);                                                     \
+        size_t per = DOGPupTocRows((u32)sizeof(L));                            \
+        if (per == 0 || $empty(toc)) return NULL;                              \
+        L const *c = L##sFindGE(toc, key);                                     \
+        size_t i = (size_t)(c - toc[0]);                                       \
+        if (c == toc[1] || L##Z(key, c)) i = i ? i - 1 : 0;                    \
+        if (i + 1 < (size_t)$len(toc)) {                                       \
+            L const *pos = toc[0] + i + 1;                                     \
+            L needle = *key;                                                   \
+            if (PUP_KEYEQ_##L) return pos;                                     \
+        }                                                                      \
+        out[0] = run[0] + i * per;                                             \
+        if (out[0] > run[1]) out[0] = run[1];                                  \
+        if (out[0] + per < out[1]) out[1] = out[0] + per;                      \
+        return NULL;                                                           \
+    }                                                                          \
     /*  the handle's ONE merged cursor: the entries advance in place, so each  \
         _next re-Loads the pointer heap over them (HITSkipValue's shape). */   \
     static L##cs JABC_PUPCUR_##L[PUP_MAX_OPEN][HIT_MAX_RUNS];                  \
     static size_t JABC_PUPCURN_##L[PUP_MAX_OPEN];                              \
                                                                                \
     /*  the query sources: committed runs oldest->newest, then the memtable's  \
-        PAST and DATA — 1 or 2 more HIT runs, never a special-cased path. */   \
-    static ok64 jpup_src_##L(L##cs *ent, size_t *n, kv64b pups) {              \
+        PAST and DATA — 1 or 2 more HIT runs, never a special-cased path.      \
+        DOG-035: `toc` runs parallel to `ent`, empty where there is none. */   \
+    static ok64 jpup_src_##L(L##cs *ent, L##cs *toc, size_t *n, kv64b pups) {  \
         sane(ent != NULL && n != NULL);                                        \
         *n = 0;                                                                \
-        Bu8cs srcs = {};                                                       \
+        Bu8cs srcs = {}, tocs = {};                                            \
         call(u8csbAllocate, srcs, HIT_MAX_RUNS);                               \
-        try(DOGPupAllRuns, srcs, pups, &JABC_PUP_LANE_##L);                    \
+        try(u8csbAllocate, tocs, HIT_MAX_RUNS);                                \
         nedo {                                                                 \
             u8csbFree(srcs);                                                   \
             return HITTOOMANY;                                                 \
         }                                                                      \
+        try(DOGPupAllRunsToc, srcs, tocs, pups, &JABC_PUP_LANE_##L);           \
+        nedo {                                                                 \
+            u8csbFree(srcs);                                                   \
+            u8csbFree(tocs);                                                   \
+            return HITTOOMANY;                                                 \
+        }                                                                      \
         size_t k = (size_t)u8csbDataLen(srcs);                                 \
         u8cs *sl = u8csbDataHead(srcs);                                        \
+        u8cs *tl = u8csbDataHead(tocs);                                        \
         for (size_t i = 0; i < k; i++) {                                       \
             ent[i][0] = (L const *)sl[i][0];                                   \
             ent[i][1] = (L const *)sl[i][1];                                   \
+            if (toc == NULL) continue;                                         \
+            toc[i][0] = (L const *)tl[i][0];                                   \
+            toc[i][1] = (L const *)tl[i][1];                                   \
         }                                                                      \
         *n = k;                                                                \
         u8csbFree(srcs);                                                       \
+        u8csbFree(tocs);                                                       \
         done;                                                                  \
     }                                                                          \
                                                                                \
@@ -331,18 +370,29 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
     }                                                                          \
                                                                                \
     /*  point lookup: newest source first (they arrive oldest-first, so walk   \
-        from the END), FindGE the key, accept iff the key matches. */          \
+        from the END), FindGE the key, accept iff the key matches.             \
+        DOG-035: the ToC picks the ONE page that can hold the key first, or    \
+        answers from a cell outright — a run is deduped, so a present key sits \
+        in that page or nowhere. */                                            \
     static JABC_FN(jpup_##L##_get) {                                           \
         pupslot *s = JABCPupSlot(ctx, argc, argv);                             \
         if (!s || argc < 2) JABC_THROW("_pup_" #L "_get(h, k)");               \
         L needle = {};                                                         \
         if (!PUP_RD_##L(&needle, ctx, argv[1])) JABC_FAIL;                     \
-        L##cs ent[HIT_MAX_RUNS];                                               \
+        L##cs ent[HIT_MAX_RUNS], toc[HIT_MAX_RUNS];                            \
         size_t n = 0;                                                          \
-        if (jpup_src_##L(ent, &n, s->pups) != OK) JABC_THROW(PUP_TOOMANY);     \
+        if (jpup_src_##L(ent, toc, &n, s->pups) != OK)                         \
+            JABC_THROW(PUP_TOOMANY);                                           \
         for (size_t j = n; j > 0; j--) {                                       \
-            L const *pos = L##sFindGE(ent[j - 1], &needle);                    \
-            if (pos < ent[j - 1][1] && (PUP_KEYEQ_##L)) return (PUP_GETV_##L); \
+            L##cs win;                                                         \
+            L const *cell = jpup_page_##L(win, ent[j - 1], toc[j - 1],         \
+                                          &needle);                            \
+            if (cell != NULL) {                                                \
+                L const *pos = cell;                                           \
+                return (PUP_GETV_##L);                                         \
+            }                                                                  \
+            L const *pos = L##sFindGE(win, &needle);                           \
+            if (pos < win[1] && (PUP_KEYEQ_##L)) return (PUP_GETV_##L);        \
         }                                                                      \
         JABC_UNDEF;                                                            \
     }                                                                          \
@@ -358,9 +408,18 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!PUP_RD_##L(&hi, ctx, argv[2])) JABC_FAIL;                         \
         if (!JS_IsFunction(ctx, argv[3]))                                      \
             JABC_THROW("the range callback must be a function");               \
-        L##cs ent[HIT_MAX_RUNS];                                               \
+        L##cs ent[HIT_MAX_RUNS], toc[HIT_MAX_RUNS];                            \
         size_t n = 0;                                                          \
-        if (jpup_src_##L(ent, &n, s->pups) != OK) JABC_THROW(PUP_TOOMANY);     \
+        if (jpup_src_##L(ent, toc, &n, s->pups) != OK)                         \
+            JABC_THROW(PUP_TOOMANY);                                           \
+        /*  DOG-035: the ToC narrows the LOWER bound only — SeekRange's own    \
+            search then runs over one page instead of the whole run, and a     \
+            matching cell makes the start EXACT, not approximate. */           \
+        for (size_t i = 0; i < n; i++) {                                       \
+            L##cs win;                                                         \
+            L const *cell = jpup_page_##L(win, ent[i], toc[i], &lo);           \
+            ent[i][0] = cell ? cell : win[0];                                  \
+        }                                                                      \
         L##css heap = {ent, ent + n};                                          \
         HIT##L##SeekRange(heap, &lo, &hi);                                     \
         L##csp slots[HIT_MAX_RUNS];                                            \
@@ -396,7 +455,8 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!PUP_RD_##L(&needle, ctx, argv[1])) JABC_FAIL;                     \
         L##cs *ent = JABC_PUPCUR_##L[h];                                       \
         size_t n = 0;                                                          \
-        if (jpup_src_##L(ent, &n, s->pups) != OK) JABC_THROW(PUP_TOOMANY);     \
+        if (jpup_src_##L(ent, NULL, &n, s->pups) != OK)                        \
+            JABC_THROW(PUP_TOOMANY);                                           \
         size_t w = 0;                                                          \
         for (size_t i = 0; i < n; i++) {                                       \
             L const *pos = L##sFindGE(ent[i], &needle);                        \
@@ -444,7 +504,8 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!JABCu64Of(&i, ctx, argv[1])) JABC_FAIL;                           \
         if (i >= DOGPupCount(s->pups)) JABC_THROW("no such index run");        \
         u8cs run = {};                                                         \
-        DOGPupData(run, s->pups, (u32)i);                                      \
+        /*  DOG-035: the marker audit reads ROWS — the ToC block is clipped */ \
+        DOGPupDataRow(run, s->pups, (u32)i, (u32)sizeof(L));                   \
         if (run[0] == NULL) JABC_THROW("no such index run");                   \
         /*  the view BORROWS the Pup's mapping — drop/close unmaps it, so it   \
             must not outlive the handle (it is the marker-audit path). */      \
