@@ -4,5 +4,22 @@
 An anti-bloat [QuickJS][q] based JavaScript runtime with [libdog][d] bindings.
 Mostly revision-control oriented.
 
+##  Building
+
+Two canonical build dirs; workers use either. NEVER build INSIDE the JS tree you bundle (the packer would swallow the build dir).
+
+ 1. `build-bundled/` — the JS tree baked into the binary (JAB-035 jsrc pack); the binary requires from the bundle ONLY, so it runs anywhere:
+
+        cmake -S . -B build-bundled -GNinja \
+            -DJAB_JSRC=<js tree, e.g. ../lite> -DQUICKJAB_JSRC_PACK=ON
+        ninja -C build-bundled quickjab
+
+ 2. `build-no-bundle/` — a plain runtime, no pack:
+
+        cmake -S . -B build-no-bundle -GNinja
+        ninja -C build-no-bundle quickjab
+
+Running with no bundle (QJAB-002 require modes, first hit wins): an explicit script path (`quickjab /abs/dir/main.js`) pins `require` barewords to THAT script's dir; otherwise the first `jsrc/` at or above the cwd is the base (plant a `jsrc` symlink to your JS tree). Tests: `ctest --test-dir <builddir> -j16`; the lite suites take the runtime via `LITEJAB=<builddir>/bin/quickjab`.
+
 [d]: https://github.com/gritzko/libdog
 [q]: https://github.com/quickjs-ng/quickjs

@@ -90,6 +90,8 @@ if(JAB_JSRC AND QUICKJAB_JSRC_PACK)
     endif()
     target_link_libraries(quickjab_boot qjs dog abc-core ${sodium})
     file(GLOB_RECURSE JAB_JSRC_FILES CONFIGURE_DEPENDS ${JAB_JSRC_DIR}/*)
+    list(FILTER JAB_JSRC_FILES EXCLUDE REGEX "^${CMAKE_BINARY_DIR}/")
+
     #  The packer runs as an EXPLICIT path and requires nothing: a build box
     #  has no jsrc/ to climb to.
     add_custom_command(OUTPUT ${JAB_PACK}
@@ -177,15 +179,26 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/test/js/get/zip.js)
         ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 endif()
 
+# QJAB-002 mode 1: a PACKED build is bundle-ONLY — the bundle's main.js owns
+# argv, so an external `.js` entry never runs and a missing one is the bundle's
+# error, not the runtime's.  The three tests that assert that ENTRY path
+# (argv, the bareword `here` idiom, the failed-open teardown) are unpacked-only.
+set(JAB_SCRIPT_ENTRY ON)
+if(JAB_JSRC AND QUICKJAB_JSRC_PACK)
+    set(JAB_SCRIPT_ENTRY OFF)
+endif()
+
 # Script argv reaches JS: run a generated script with a tail of args and grep the
 # JSON it logs to stderr (`args` + Node-shaped `process.argv`) — JS-015.
-add_test(NAME JABCargv
-    COMMAND ${JAB_TEST}/run-015.sh $<TARGET_FILE:quickjab>)
+if(JAB_SCRIPT_ENTRY)
+    add_test(NAME JABCargv
+        COMMAND ${JAB_TEST}/run-015.sh $<TARGET_FILE:quickjab>)
 
-# JAB-001: `quickjab <bareword>` resolves via the upward `jsrc/`-scan and
-# patches process.argv[1] (the `here` idiom), distinct from explicit-path eval.
-add_test(NAME JABCrequireJsrc
-    COMMAND ${JAB_TEST}/run-055.sh $<TARGET_FILE:quickjab>)
+    # JAB-001: `quickjab <bareword>` resolves via the upward `jsrc/`-scan and
+    # patches process.argv[1] (the `here` idiom), distinct from explicit-path eval.
+    add_test(NAME JABCrequireJsrc
+        COMMAND ${JAB_TEST}/run-055.sh $<TARGET_FILE:quickjab>)
+endif()
 
 # JAB-035: the pack FORMAT (preamble + a deterministic ustar) over the very
 # packer cmake runs at build time — every build, packed or not.
@@ -194,8 +207,10 @@ add_test(NAME JABCjsrcPack COMMAND quickjab ${JAB_TEST}/jsrcpack.js)
 # JAB-035: the floor end-to-end, in a scratch HOME (no jsrc anywhere, and the
 # real ~/.cache untouched).
 if(JAB_JSRC AND QUICKJAB_JSRC_PACK)
+    #  QJAB-002: a packed build is bundle-ONLY, so the floor is asserted in
+    #  `--bundle` mode — a user jsrc/ never wins (jab keeps the STACK reading).
     add_test(NAME JABCjsrcFloor
-        COMMAND ${JAB_TEST}/run-035.sh $<TARGET_FILE:quickjab>)
+        COMMAND ${JAB_TEST}/run-035.sh $<TARGET_FILE:quickjab> --bundle)
 else()
     add_test(NAME JABCjsrcNoFloor
         COMMAND ${JAB_TEST}/run-035.sh $<TARGET_FILE:quickjab> --nofloor)
@@ -208,9 +223,12 @@ endif()
 
 # JS-054: error-exit paths must run the same teardown as success, so a failed
 # script-file open frees the JS context.  Deliberately NOT in the suppression
-# group below — the broad suppression would mask the leak.
-add_test(NAME JABCleakExit
-    COMMAND ${JAB_TEST}/run-054.sh $<TARGET_FILE:quickjab>)
+# group below — the broad suppression would mask the leak.  Script-entry, so
+# unpacked-only (see JAB_SCRIPT_ENTRY): a bundle answers a bad path itself.
+if(JAB_SCRIPT_ENTRY)
+    add_test(NAME JABCleakExit
+        COMMAND ${JAB_TEST}/run-054.sh $<TARGET_FILE:quickjab>)
+endif()
 
 # JS-064: a bareword run (the resident be/ loop) must be LSan-clean on the
 # normal exit.  Like JABCleakExit, NOT in the suppression group.
@@ -220,5 +238,26 @@ add_test(NAME JABCleakLoop
 # jab's group suppresses JavaScriptCore's lazily-initialised singletons; the
 # quickjs engine frees everything on JS_FreeRuntime, so the file is inherited
 # only to keep the property set identical to jab's (JABCtestCpp is absent).
-set_tests_properties(JABCe2e JABCheap JABChash JABCmmap JABCstat JABCreaddir JABCsha JABChit JABCindex JABCpupMem JABChunk JABCtok JABCuri JABCcodec JABCrequire JABCpack JABCpackidx JABCrepack JABCgit JABCulog JABCulogBook JABCweave JABCbass JABCansi JABCconsole JABCtty JABCpol JABCfsw JABCnet JABCargv JABCrequireJsrc JABCjsrcPack PROPERTIES
+set(JABC_SUPPRESSED JABCe2e JABCheap JABChash JABCmmap JABCstat JABCreaddir JABCsha JABChit JABCindex JABCpupMem JABChunk JABCtok JABCuri JABCcodec JABCrequire JABCpack JABCpackidx JABCrepack JABCgit JABCulog JABCulogBook JABCweave JABCbass JABCansi JABCconsole JABCtty JABCpol JABCfsw JABCnet JABCjsrcPack)
+if(JAB_SCRIPT_ENTRY)
+    list(APPEND JABC_SUPPRESSED JABCargv JABCrequireJsrc)
+endif()
+set_tests_properties(${JABC_SUPPRESSED} PROPERTIES
     ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
+
+# The BUNDLED TREE's own suites.  A -DJAB_JSRC tree may ship `test/*/run.sh`
+# (beagle-lite does): each is a standalone shell suite that takes the runtime in
+# $LITEJAB, so register one ctest per dir pointed at the binary we just packed
+# it into.  No bundle, no tests — and a tree without `test/` registers nothing.
+if(JAB_JSRC AND QUICKJAB_JSRC_PACK)
+    file(GLOB JAB_JSRC_SUITES ${JAB_JSRC_DIR}/test/*/run.sh)
+    foreach(SUITE ${JAB_JSRC_SUITES})
+        get_filename_component(SUITE_DIR ${SUITE} DIRECTORY)
+        get_filename_component(SUITE_NAME ${SUITE_DIR} NAME)
+        add_test(NAME JSRC${SUITE_NAME} COMMAND sh ${SUITE})
+        #  They build git fixtures under ~/tmp and drive real ptys; the binary
+        #  under test is THIS build's, never a `jab` off the PATH.
+        set_tests_properties(JSRC${SUITE_NAME} PROPERTIES
+            ENVIRONMENT "LITEJAB=$<TARGET_FILE:quickjab>" TIMEOUT 600)
+    endforeach()
+endif()
