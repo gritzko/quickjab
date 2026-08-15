@@ -182,6 +182,7 @@ static void JABCInstallModules(void) {
     JABCInstallTty(ctx, global);   //  tty.raw/cook/size over abc/FILE (JS-053)
     JABCInstallPol(ctx, global);   //  poll() event loop over abc/POL
     JABCInstallNet(ctx, global);   //  net/dgram + Node timers over pol
+    JABCInstallHttp(ctx, global);  //  QJAB-004: http._drain/_feed over abc/HTTP
     JABCInstallFsw(ctx, global);   //  fsw dir watcher over abc/FSW (JAB-031)
     JABCInstallJsrcPack(ctx, global);  //  JAB-035: the embedded jsrc pack
     JABCInstallRequire(ctx, global);   //  sync CommonJS require() (last)

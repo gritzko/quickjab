@@ -160,6 +160,8 @@ ok64 JABCInstallAnsi(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallTty(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallPol(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallNet(JSContext *ctx, JSValueConst global);
+//  QJAB-004: http._drain/_feed — the abc/HTTP ragel lexer, leaf-only.
+ok64 JABCInstallHttp(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallFsw(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallJsrcPack(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallRequire(JSContext *ctx, JSValueConst global);

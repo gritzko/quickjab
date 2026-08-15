@@ -54,6 +54,8 @@ set(QUICKJAB_SRC
     igno.c
     pol.c ${ABC_DIR}/POL.c
     net.c ${ABC_DIR}/NET.c ${ABC_DIR}/TCP.c ${ABC_DIR}/UDP.c
+    #  QJAB-004: abc/HTTP is stripped from abc-core too (grouped with CURL)
+    http.c ${ABC_DIR}/HTTP.c ${ABC_DIR}/HTTP.rl.c
     fsw.c ${ABC_DIR}/FSW.c)
 
 #  JS-122: rpmalloc 1.4.5 (one vendored .c) as the JS runtime's allocator.
@@ -172,6 +174,13 @@ add_test(NAME JABCfsw COMMAND quickjab ${JAB_TEST}/fsw.js)
 set_tests_properties(JABCfsw PROPERTIES TIMEOUT 20)
 add_test(NAME JABCnet COMMAND quickjab ${JAB_TEST}/net.js)
 add_test(NAME JABCnetGrow COMMAND quickjab ${JAB_TEST}/netgrow.js)
+# QJAB-004: the abc/HTTP lexer leaves — heads, partial feeds, a loopback over
+# net.  Gated like JABCigno: the .js sits in the SHARED test repo (lands apart).
+if(EXISTS ${JAB_TEST}/http.js)
+    add_test(NAME JABChttp COMMAND quickjab ${JAB_TEST}/http.js)
+    set_tests_properties(JABChttp PROPERTIES
+        ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
+endif()
 # JS-035: the zip test is a beagle-owned file — absent standalone, so gated.
 if(EXISTS ${CMAKE_SOURCE_DIR}/test/js/get/zip.js)
     add_test(NAME JABCzip COMMAND quickjab ${CMAKE_SOURCE_DIR}/test/js/get/zip.js)
