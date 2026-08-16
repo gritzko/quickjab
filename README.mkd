@@ -1,17 +1,21 @@
-#   QuickJAB: QuickJS based JS runtime
+#   QuickJAB: JS runtime with libdog
 
 <img align=right width="25%" src="./quickjab.jpg"/>
+
 An anti-bloat [QuickJS][q] based JavaScript runtime with [libdog][d] bindings.
-Mostly revision-control oriented.
+Mostly revision-control oriented: git compatibility, CRDTs, tokenizers for 70
+programming languages, diff/patch/merge and other things.
 
-##  Building
+### Building
 
-Two canonical build dirs; workers use either. NEVER build INSIDE the JS tree you bundle (the packer would swallow the build dir).
+QuickJAB can be built as a generic runtime or (better) with some bundled JavaScript.
 
- 1. `build-bundled/` — the JS tree baked into the binary (JAB-035 jsrc pack); the binary requires from the bundle ONLY, so it runs anywhere:
+ 1. `build-bundled/` — the JS tree baked into the binary (JAB-035 jsrc pack); 
+    the binary requires from the bundle ONLY, so it runs anywhere:
 
-        cmake -S . -B build-bundled -GNinja \
-            -DJAB_JSRC=<js tree, e.g. ../lite> -DQUICKJAB_JSRC_PACK=ON
+        cmake -S . -B build-bundle -DCMAKE_BUILD_TYPE=Release \
+            -GNinja -DJAB_JSRC=<path to js tree> -DJAB_BIN=<binary name> \
+            -DQUICKJAB_JSRC_PACK=ON 
         ninja -C build-bundled quickjab
 
  2. `build-no-bundle/` — a plain runtime, no pack:
@@ -19,7 +23,11 @@ Two canonical build dirs; workers use either. NEVER build INSIDE the JS tree you
         cmake -S . -B build-no-bundle -GNinja
         ninja -C build-no-bundle quickjab
 
+### Running
+
 Running with no bundle (QJAB-002 require modes, first hit wins): an explicit script path (`quickjab /abs/dir/main.js`) pins `require` barewords to THAT script's dir; otherwise the first `jsrc/` at or above the cwd is the base (plant a `jsrc` symlink to your JS tree). Tests: `ctest --test-dir <builddir> -j16`; the lite suites take the runtime via `LITEJAB=<builddir>/bin/quickjab`.
+
+With bundle present, control goes to `main.js`.
 
 [d]: https://github.com/gritzko/libdog
 [q]: https://github.com/quickjs-ng/quickjs
