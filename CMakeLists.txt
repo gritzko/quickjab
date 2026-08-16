@@ -10,23 +10,23 @@ project(quickjab C)
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-strict-aliasing")
 set(CMAKE_EXPORT_COMPILE_COMMANDS on)
-set(DOG_BIN_DIR ${CMAKE_BINARY_DIR}/bin)
+set(JAB_BIN_DIR ${CMAKE_BINARY_DIR}/bin)
 include(CTest)
 
 #  The API suite is the in-tree test/ submodule, SHARED with jab (same cases,
 #  same names): jab mounts the very same repo at its test/.
 set(JAB_TEST ${CMAKE_CURRENT_SOURCE_DIR}/test)
-set(DOG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dog)
-set(ABC_DIR ${DOG_DIR}/abc)
+set(JAB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dog)
+set(ABC_DIR ${JAB_DIR}/abc)
 
 #  curl is a hard dependency of the build (abc carries CURL.c); named here so a
 #  missing libcurl-dev shows on the first lines of configure output.
 find_package(CURL REQUIRED)
 
 #  JAB-005: abc is NESTED in dog; dog's guarded add_subdirectory(abc) provides
-#  abc-core, and `-I${DOG_DIR}` resolves "abc/...".
+#  abc-core, and `-I${JAB_DIR}` resolves "abc/...".
 if(NOT TARGET dog)
-    add_subdirectory(${DOG_DIR} dog)
+    add_subdirectory(${JAB_DIR} dog)
 endif()
 
 #  The engine: vendored quickjs-ng (qjs/VERSION.pin).  Its CMakeLists owns its
@@ -36,10 +36,10 @@ add_subdirectory(qjs)
 #  SODIUM_INCLUDE_DIR is cached by abc's find_path; jab TUs reach sodium
 #  headers via ABC.h -> NACL.h.
 #  "dog/..." resolves via -I${CMAKE_CURRENT_SOURCE_DIR} (dog is in-tree now),
-#  "abc/..." via -I${DOG_DIR}.
+#  "abc/..." via -I${JAB_DIR}.
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${DOG_DIR}
+    ${JAB_DIR}
     ${SODIUM_INCLUDE_DIR}
 )
 
@@ -70,7 +70,10 @@ if(QJAB_RPMALLOC)
     target_compile_definitions(quickjab PRIVATE QJAB_RPMALLOC)
 endif()
 target_link_libraries(quickjab qjs dog abc-core ${sodium})
-set_target_properties(quickjab PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${DOG_BIN_DIR})
+#  -DJAB_BIN=<name> names the built binary (e.g. `lite`); target stays quickjab.
+set(JAB_BIN "quickjab" CACHE STRING "the output binary name")
+set_target_properties(quickjab PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${JAB_BIN_DIR}
+    OUTPUT_NAME ${JAB_BIN})
 
 #  JAB-035: -DJAB_JSRC=<dir> embeds that tree as the DEFAULT jsrc pack.  The
 #  packer is the binary itself, so it needs a WORKING io+require — hence the
