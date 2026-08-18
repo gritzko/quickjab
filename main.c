@@ -178,6 +178,7 @@ static void JABCInstallModules(void) {
     JABCInstallCodec(ctx, global); //  hex + sha1/sha256 + ron
     JABCInstallZip(ctx, global);   //  zip.deflate/inflate over dog/git/ZINF
     JABCInstallIgno(ctx, global);  //  dog._igno_* over dog/git/IGNO (STATUS-020)
+    JABCInstallDirc(ctx, global);  //  dog.readIndex over dog/git/DIRC (GIT-032)
     JABCInstallAnsi(ctx, global);  //  ansi colour helper (pure JS)
     JABCInstallTty(ctx, global);   //  tty.raw/cook/size over abc/FILE (JS-053)
     JABCInstallPol(ctx, global);   //  poll() event loop over abc/POL

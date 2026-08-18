@@ -156,6 +156,8 @@ ok64 JABCInstallCodec(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallZip(JSContext *ctx, JSValueConst global);
 //  STATUS-020: the only `dog`-namespace install so far; it creates the object.
 ok64 JABCInstallIgno(JSContext *ctx, JSValueConst global);
+//  GIT-032: dog.readIndex over dog/git/DIRC; shares igno's `dog` object.
+ok64 JABCInstallDirc(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallAnsi(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallTty(JSContext *ctx, JSValueConst global);
 ok64 JABCInstallPol(JSContext *ctx, JSValueConst global);

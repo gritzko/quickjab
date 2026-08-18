@@ -51,7 +51,7 @@ set(QUICKJAB_SRC
     io.c buf.c console.c ansi.c require.c codec.c zip.c uri.c tty.c
     jsrcpack.c cont.c tok.c
     heap.c hash.c hit.c index.c pup.c hunk.c pack.c git.c ulog.c cfold.c weave.c
-    igno.c
+    igno.c dirc.c
     pol.c ${ABC_DIR}/POL.c
     net.c ${ABC_DIR}/NET.c ${ABC_DIR}/TCP.c ${ABC_DIR}/UDP.c
     #  QJAB-004: abc/HTTP is stripped from abc-core too (grouped with CURL)
@@ -231,6 +231,11 @@ endif()
 # GIT-030: the git ODB waist ladder; gated — the test lands with the jab tree.
 if(EXISTS ${JAB_TEST}/gitodb.js)
     add_test(NAME JABCgitOdb COMMAND quickjab ${JAB_TEST}/gitodb.js)
+endif()
+
+# GIT-032: the .git/index (DIRC) waist ladder; gated the same way.
+if(EXISTS ${JAB_TEST}/dirc.js)
+    add_test(NAME JABCdirc COMMAND quickjab ${JAB_TEST}/dirc.js)
 endif()
 
 # JS-054: error-exit paths must run the same teardown as success, so a failed
