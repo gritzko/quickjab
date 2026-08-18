@@ -1,6 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>  // _NSGetExecutablePath, for process.execPath
+#elif defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/sysctl.h>  // KERN_PROC_PATHNAME, for process.execPath
+#endif
 
 #include "JABC.h"
 #ifdef QJAB_RPMALLOC
@@ -225,6 +232,34 @@ static void JABCProcVersn(JSValueConst proc, const char *key,
                               JS_PROP_ENUMERABLE);
 }
 
+//  The absolute path of THIS binary, Node's process.execPath: /proc/self/exe on
+//  Linux, _NSGetExecutablePath on macOS, sysctl(KERN_PROC_PATHNAME) on FreeBSD
+//  (its /proc is optional), realpath(argv[0]) as the last resort
+//  (`process.argv[0]` is the literal "jab", so scripts cannot derive it).
+//  Returns JS_UNDEFINED when nothing answers.
+static JSValue JABCExecPath(const char *argv0) {
+    char buf[PATH_MAX];
+#ifdef __APPLE__
+    char raw[PATH_MAX];
+    uint32_t len = sizeof(raw);
+    if (_NSGetExecutablePath(raw, &len) == 0 && realpath(raw, buf) != NULL)
+        return JSOfCString(buf);
+#elif defined(__FreeBSD__)
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    size_t len = sizeof(buf);
+    if (sysctl(mib, 4, buf, &len, NULL, 0) == 0 && len > 1)
+        return JSOfCString(buf);
+#else
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = 0;
+        return JSOfCString(buf);
+    }
+#endif
+    if (argv0 != NULL && realpath(argv0, buf) != NULL) return JSOfCString(buf);
+    return JS_UNDEFINED;
+}
+
 //  Expose the script's argv tail to JS: global `args` (tokens after the script
 //  path) plus a Node-ish `process = { argv: ["jab", script, ...tail] }`.
 //  `tail` is the index of the first token after the script path (== argc when
@@ -236,6 +271,8 @@ static void JABCInstallArgv(int argc, char **argv, int tail,
     JSValue proc = JS_NewObject(JABC_CONTEXT);
     JS_SetPropertyStr(JABC_CONTEXT, proc, "argv",
                       JABCArgvArray(argc, argv, tail, "jab", script_file));
+    JSValue exe = JABCExecPath(argc > 0 ? argv[0] : NULL);
+    if (!JS_IsUndefined(exe)) JS_SetPropertyStr(JABC_CONTEXT, proc, "execPath", exe);
     JABCProcVersn(proc, "version", VERSNVersion);
     JABCProcVersn(proc, "build", VERSNHash);
     JABCProcVersn(proc, "build_date", VERSNDate);
