@@ -17,8 +17,10 @@ static b8 JABCArgU8(u8s out, JSContext *ctx, JSValueConst v, u8 *tmp,
         size_t n = 0;
         const char *s = JS_ToCStringLen(ctx, &n, v);
         if (s == NULL) return NO;
-        if (n >= cap) n = cap - 1;  //  jab truncates to the scratch, as here
-        memcpy(tmp, s, n);
+        //  jab truncates to the scratch; QJAB-011: `cap - 1` at cap==0 is
+        //  SIZE_MAX, so guard it like the hunk.c twin (hunk.c:24).
+        if (n >= cap) n = cap ? cap - 1 : 0;
+        if (n) memcpy(tmp, s, n);
         JS_FreeCString(ctx, s);
         out[0] = tmp;
         out[1] = tmp + n;

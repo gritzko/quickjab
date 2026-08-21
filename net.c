@@ -78,8 +78,8 @@ static JABC_FN(JABCNetConnect) {
 static JABC_FN(JABCNetAccept) {
     (void)this_val;
     if (argc < 1) JABC_THROW("net._accept(sfd)");
-    i32 sfd = 0;
-    if (JS_ToInt32(ctx, &sfd, argv[0]) < 0) JABC_FAIL;
+    int sfd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
+    if (!JABCFdOf(&sfd, ctx, argv[0])) JABC_FAIL;
     int cfd = -1;
     aNETraw(caddr);
     if (TCPAccept(&cfd, caddr, sfd) != OK || cfd < 0)
@@ -92,8 +92,8 @@ static JABC_FN(JABCNetAccept) {
 static JABC_FN(JABCNetRecv) {
     (void)this_val;
     if (argc < 2) JABC_THROW("net._recv(fd, Uint8Array)");
-    i32 fd = 0;
-    if (JS_ToInt32(ctx, &fd, argv[0]) < 0) JABC_FAIL;
+    int fd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
+    if (!JABCFdOf(&fd, ctx, argv[0])) JABC_FAIL;
     u8 *tab[4] = {};
     if (!JABCIdleOf(tab, ctx, argv[1])) JABC_FAIL;
     ssize_t n;
@@ -113,8 +113,8 @@ static JABC_FN(JABCNetRecv) {
 static JABC_FN(JABCNetSend) {
     (void)this_val;
     if (argc < 2) JABC_THROW("net._send(fd, Uint8Array)");
-    i32 fd = 0;
-    if (JS_ToInt32(ctx, &fd, argv[0]) < 0) JABC_FAIL;
+    int fd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
+    if (!JABCFdOf(&fd, ctx, argv[0])) JABC_FAIL;
     u8 *tab[4] = {};
     if (!JABCDataOf(tab, ctx, argv[1])) JABC_FAIL;
     ssize_t n;
@@ -134,8 +134,8 @@ static JABC_FN(JABCNetSend) {
 static JABC_FN(JABCNetShutwr) {
     (void)this_val;
     if (argc < 1) JABC_THROW("net._shutwr(fd)");
-    i32 fd = 0;
-    if (JS_ToInt32(ctx, &fd, argv[0]) < 0) JABC_FAIL;
+    int fd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
+    if (!JABCFdOf(&fd, ctx, argv[0])) JABC_FAIL;
     (void)shutdown(fd, SHUT_WR);
     JABC_UNDEF;
 }
@@ -144,8 +144,8 @@ static JABC_FN(JABCNetShutwr) {
 static JABC_FN(JABCNetClose) {
     (void)this_val;
     if (argc < 1) JABC_THROW("net._close(fd)");
-    i32 fd = 0;
-    if (JS_ToInt32(ctx, &fd, argv[0]) < 0) JABC_FAIL;
+    int fd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
+    if (!JABCFdOf(&fd, ctx, argv[0])) JABC_FAIL;
     (void)close(fd);
     JABC_UNDEF;
 }
@@ -170,8 +170,8 @@ static JABC_FN(JABCDgramBind) {
 static JABC_FN(JABCDgramRecv) {
     (void)this_val;
     if (argc < 2) JABC_THROW("dgram._recv(fd, Uint8Array)");
-    i32 fd = 0;
-    if (JS_ToInt32(ctx, &fd, argv[0]) < 0) JABC_FAIL;
+    int fd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
+    if (!JABCFdOf(&fd, ctx, argv[0])) JABC_FAIL;
     u8 *tab[4] = {};
     if (!JABCIdleOf(tab, ctx, argv[1])) JABC_FAIL;
     struct sockaddr_storage ss;
@@ -199,8 +199,8 @@ static JABC_FN(JABCDgramRecv) {
 static JABC_FN(JABCDgramSend) {
     (void)this_val;
     if (argc < 4) JABC_THROW("dgram._send(fd, u8, host, port)");
-    i32 fd = 0;
-    if (JS_ToInt32(ctx, &fd, argv[0]) < 0) JABC_FAIL;
+    int fd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
+    if (!JABCFdOf(&fd, ctx, argv[0])) JABC_FAIL;
     u8 *tab[4] = {};
     if (!JABCDataOf(tab, ctx, argv[1])) JABC_FAIL;
     char host[NETmaxhost] = "", port[NETmaxserv] = "";

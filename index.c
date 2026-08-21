@@ -25,11 +25,21 @@
 #include "abc/HITx.h"
 #undef X
 
+//  QJAB-011: a lane element is a u64 or a wh128, so an odd-byteOffset subarray
+//  would hand the leaves misaligned loads (SIGBUS on strict targets).  The same
+//  8-byte gate pack.c:256:0X applies to its wh128 regions.
+static b8 JABCLaneAligned(JSContext *ctx, void const *base) {
+    if (((uintptr_t)base & 7u) == 0) return YES;
+    JABCThrowStr(ctx, "index: the lane array is not 8-byte aligned");
+    return NO;
+}
+
 //  A lane array's backing: base pointer + capacity in ELEMENTS (jab: cont.hpp).
 static b8 JABCLaneArr(void **base, size_t *cap, JSContext *ctx,
                       JSValueConst arg, size_t esz) {
     u8 *b[4] = {};
     if (!JABCDataOf(b, ctx, arg)) return NO;
+    if (!JABCLaneAligned(ctx, u8bData(b)[0])) return NO;
     *base = (void *)u8bData(b)[0];
     *cap = u8bDataLen(b) / esz;
     return YES;
@@ -109,6 +119,7 @@ static b8 JABCIdxStop(JSContext *ctx, JSValueConst r) {
             JS_FreeValue(ctx, el);                                            \
             if (!ok) JABC_FAIL;                                               \
             u8 const *const *b = u8bDataC(bb);                                \
+            if (!JABCLaneAligned(ctx, b[0])) JABC_FAIL; /* QJAB-011 */        \
             ent[i][0] = (const L *)b[0];                                      \
             ent[i][1] = (const L *)b[1];                                      \
         }                                                                     \
@@ -154,12 +165,14 @@ static b8 JABCIdxStop(JSContext *ctx, JSValueConst r) {
             JS_FreeValue(ctx, el);                                            \
             if (!ok) JABC_FAIL;                                               \
             u8 const *const *b = u8bDataC(bb);                                \
+            if (!JABCLaneAligned(ctx, b[0])) JABC_FAIL; /* QJAB-011 */        \
             ent[i][0] = (const L *)b[0];                                      \
             ent[i][1] = (const L *)b[1];                                      \
         }                                                                     \
         u8 *db4[4] = {};                                                      \
         if (!JABCDataOf(db4, ctx, argv[1])) JABC_FAIL;                        \
         u8 *const *d = u8bData(db4);                                          \
+        if (!JABCLaneAligned(ctx, d[0])) JABC_FAIL; /* QJAB-011 */            \
         L *base = (L *)d[0];                                                  \
         L##s into = {base, (L *)d[1]};                                        \
         L##css stack = {ent, ent + N};                                        \

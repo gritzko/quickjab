@@ -9,12 +9,10 @@
 #include "JABC.h"
 #include "abc/ANSI.h"
 
-//  A JS number as an fd; JS_ToFloat64 leaves the error pending on failure.
+//  A JS number as an fd.  QJAB-011: `(int)d` made NaN and +-Inf undefined
+//  behaviour (in practice fd 0, i.e. stdin) — the arg.c gate refuses them.
 static b8 JABCttyInt(int *out, JSContext *ctx, JSValueConst v) {
-    double d = 0;
-    if (JS_ToFloat64(ctx, &d, v) < 0) return NO;
-    *out = (int)d;
-    return YES;
+    return JABCFdOf(out, ctx, v);
 }
 
 //  Set a numeric property on an object (the {rows, cols} record).

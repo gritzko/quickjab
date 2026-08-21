@@ -83,6 +83,9 @@ static JABC_FN(JABChunkDogenize) {
             JABC_FAIL;
     }
     size_t srcn = $len(source);
+    //  QJAB-011: past the 24-bit token end offset the offsets wrap and the
+    //  hunk comes out malformed — the same gate tok.c:52 already applies.
+    if (srcn > TOK_OFF_MASK) JABC_THROW("hunk.dogenize: source > 16 MiB");
     u32 *tm = (u32 *)malloc((srcn + 1) * sizeof(u32));
     if (tm == NULL) JABC_THROW("hunk.dogenize: oom");
     u32 *tb[4] = {tm, tm, tm, tm + srcn + 1};

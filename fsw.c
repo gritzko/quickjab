@@ -47,12 +47,12 @@ static JABC_FN(JABCFswInit) {
 static JABC_FN(JABCFswDir) {
     (void)this_val;
     if (argc < 2) JABC_THROW("fsw.dir(wfd, path)");
-    u64 wfd = 0;
-    if (!JABCu64Of(&wfd, ctx, argv[0])) JABC_FAIL;
+    int wfd = -1;  //  QJAB-011: gate the fd, never truncate a u64 into int
+    if (!JABCFdOf(&wfd, ctx, argv[0])) JABC_FAIL;
     a_pad(u8, p, FILE_PATH_MAX_LEN);
     if (JABCPath(p, ctx, argv[1]) != OK) JABC_THROW("fsw.dir: bad path");
     i32 wd = 0;
-    if (FSWDir((int)wfd, $path(p), &wd) != OK)
+    if (FSWDir(wfd, $path(p), &wd) != OK)
         JABC_THROW("fsw.dir: cannot watch that directory");
     return JS_NewFloat64(ctx, (double)wd);
 }
@@ -61,13 +61,13 @@ static JABC_FN(JABCFswDir) {
 static JABC_FN(JABCFswDrain) {
     (void)this_val;
     if (argc < 2) JABC_THROW("fsw.drain(wfd, buf)");
-    u64 wfd = 0;
-    if (!JABCu64Of(&wfd, ctx, argv[0])) JABC_FAIL;
+    int wfd = -1;  //  QJAB-011: gate the fd, never truncate a u64 into int
+    if (!JABCFdOf(&wfd, ctx, argv[0])) JABC_FAIL;
     if (!JS_IsObject(argv[1])) JABC_THROW("fsw.drain: buf must be a Buf");
     u8 *buf[4] = {};  //  cursors gated + checked in arg.c
     if (!JABCBufOf(buf, ctx, argv[1])) JABC_FAIL;
     JABCFswSink sink = {buf, 0};
-    ok64 o = FSWDrain((int)wfd, JABCFswPack, &sink);
+    ok64 o = FSWDrain(wfd, JABCFswPack, &sink);
     JABCBufBack(ctx, argv[1], buf);  //  whole records already packed stay visible
     if (o == FSWNOROOM) JABC_THROW("fsw.drain: the buffer is full, events lost");
     if (o != OK) JABC_THROW("fsw.drain: cannot read the watcher");
@@ -79,9 +79,9 @@ static JABC_FN(JABCFswDrain) {
 static JABC_FN(JABCFswClose) {
     (void)this_val;
     if (argc < 1) JABC_THROW("fsw.close(wfd)");
-    u64 wfd = 0;
-    if (!JABCu64Of(&wfd, ctx, argv[0])) JABC_FAIL;
-    FSWClose((int)wfd);
+    int wfd = -1;  //  QJAB-011: gate the fd, never truncate a u64 into int
+    if (!JABCFdOf(&wfd, ctx, argv[0])) JABC_FAIL;
+    FSWClose(wfd);
     JABC_UNDEF;
 }
 

@@ -153,6 +153,20 @@ b8 JABCu32Of(u32 *out, JSContext *ctx, JSValueConst arg) {
     return YES;
 }
 
+//  QJAB-011: a file descriptor.  JS_ToInt32 turns NaN (a missing argument) and
+//  +-Inf into 0 — i.e. STDIN — so every fd leaf gates here instead: whole,
+//  non-negative, and inside the kernel's own descriptor range.
+b8 JABCFdOf(int *out, JSContext *ctx, JSValueConst arg) {
+    u64 v = 0;
+    if (!JABCu64Of(&v, ctx, arg)) return NO;
+    if (v > 0x7fffffffUL) {
+        JABCThrowStr(ctx, "expected a file descriptor");
+        return NO;
+    }
+    *out = (int)v;
+    return YES;
+}
+
 b8 JABCu8Of(u8 *out, JSContext *ctx, JSValueConst arg) {
     u64 v = 0;
     if (!JABCu64Of(&v, ctx, arg)) return NO;
@@ -312,6 +326,13 @@ ok64 JABCPath(path8b path, JSContext *ctx, JSValueConst arg) {
         return NOROOM;
     }
     u8cs src = {(u8 const *)s, (u8 const *)s + len};
+    //  QJAB-011: an interior NUL passes the length check above, then the OS
+    //  truncates the C path — "safe\0/x" would open "safe".  Refuse the string.
+    a_dup(u8c, scan, src);
+    if (u8csFind(scan, 0) == OK) {
+        JS_FreeCString(ctx, s);
+        return BADARG;
+    }
     ok64 o = u8bFeed(path, src);
     JS_FreeCString(ctx, s);
     if (o != OK) return o;

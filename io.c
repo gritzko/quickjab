@@ -311,7 +311,13 @@ typedef struct {
     b8 hidden;        //  include dotfiles + descend hidden dirs
     b8 stop;          //  cb said "enough" — abort, but not an error
     b8 threw;         //  cb threw — abort and propagate the pending exception
+    u32 depth;        //  QJAB-011: nesting of the per-entry "recur" descent
 } JABCReaddirCtx;
+
+//  QJAB-011: each "recur" level costs a C frame with two page-sized path
+//  buffers, so an attacker-planted deep tree would blow the stack; refuse
+//  past this depth instead.  The native deep scan (recursive:true) is a loop.
+#define JABC_READDIR_MAX_DEPTH 64
 
 //  Emit one entry into the result array (no-callback array form).
 static ok64 JABCReaddirEmit(void0p arg, path8p path) {
@@ -388,10 +394,17 @@ static ok64 JABCReaddirCall(void0p arg, path8p path) {
         //  FRESH path buffer (the live iterator buffer must not be re-driven
         //  mid-iteration).  rootlen stays the ORIGINAL root, so nested entries
         //  come out relative ("sub/child").
+        if (c->depth >= JABC_READDIR_MAX_DEPTH) {  //  QJAB-011: stack guard
+            JABCThrowStr(c->ctx, "io.readdir(): \"recur\" nests deeper than 64");
+            c->threw = YES;
+            return JABCSCANSTOP;
+        }
         a_path(sub);
         ok64 d = PATHu8bDup(sub, u8bDataC(path));
         if (d != OK) return d;
+        c->depth++;
         d = FILEScanDir(sub, JABCReaddirCall, c);
+        c->depth--;
         if (d != OK && d != JABCSCANSTOP) return d;
         if (d == JABCSCANSTOP) return d;  //  propagate stop/throw out of the tree
     }
@@ -691,6 +704,11 @@ static JABC_FN(JABCioRam) {
     double dn = 0;
     if (JS_ToFloat64(ctx, &dn, argv[0]) < 0) JABC_FAIL;
     if (dn <= 0) JABC_THROW("io._ram(): size must be > 0");
+    //  QJAB-011: the same 2 GiB ceiling io._mmap enforces (io.c:613) — refuse
+    //  here in plain words, not as a late mmap failure or a RangeError.
+    if (dn > (double)JABC_MAP_MAX)
+        JABC_THROW("io._ram(): the request is bigger than 2 GiB, "
+                   "which is the largest region jab can map at once");
     size_t n = (size_t)dn;
     //  JAB-033: an anon map costs a VMA too — reap the dead ones first.
     JABCPinSweep();

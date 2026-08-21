@@ -99,6 +99,8 @@ b8 JABCu64Of(u64 *out, JSContext *ctx, JSValueConst arg);
 b8 JABCi64Of(i64 *out, JSContext *ctx, JSValueConst arg);
 b8 JABCu32Of(u32 *out, JSContext *ctx, JSValueConst arg);
 b8 JABCu8Of(u8 *out, JSContext *ctx, JSValueConst arg);
+//  QJAB-011: an fd — whole, non-negative, in range; NaN/Inf are not fd 0.
+b8 JABCFdOf(int *out, JSContext *ctx, JSValueConst arg);
 //  The raw typed-array unwrap (the VIEW's range, byteOffset applied).
 b8 JABCViewOf(u8 **base, size_t *len, JSContext *ctx, JSValueConst arg);
 //  A typed array as a read source (whole view = DATA) / write target (= IDLE).

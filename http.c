@@ -39,7 +39,10 @@ static ok64 jhttp_drain(jhttp *j, u8csc in) {
     u8cssDup(j->pairs, pairs);
     //  QJAB-004: the grammar closes a head with CRLF CRLF right behind the
     //  last token it lexed — the request/status line's tail, or a field value.
-    u8cs last = {in[0], j->http.version[1]};
+    //  QJAB-011: a head the grammar accepts with no version token leaves
+    //  version[1] NULL, which would make `head` a wild pointer difference —
+    //  start at the head of `in` (an empty tail) and only ever widen.
+    u8cs last = {in[0], j->http.version[1] != NULL ? j->http.version[1] : in[0]};
     if (j->http.reason[0] != NULL) last[1] = j->http.reason[1];
     if (u8cssLen(pairs) != 0) last[1] = (*$last(pairs))[1];
     j->head = (size_t)u8csLen(last) + 4;

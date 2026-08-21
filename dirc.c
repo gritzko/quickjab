@@ -32,7 +32,10 @@ static b8 jdirc_str(char *out, size_t cap, JSContext *ctx, JSValueConst v) {
     size_t n = 0;
     const char *s = JS_ToCStringLen(ctx, &n, v);
     if (s == NULL) return NO;
-    b8 ok = (b8)(n > 0 && n < cap);
+    //  QJAB-011: an interior NUL fits the length check yet truncates the C
+    //  path the OS sees — refuse it here, as arg.c's JABCPath does.
+    u8cs src = {(u8 const *)s, (u8 const *)s + n};
+    b8 ok = (b8)(n > 0 && n < cap && u8csFind(src, 0) != OK);
     if (ok) {
         memcpy(out, s, n);
         out[n] = 0;
