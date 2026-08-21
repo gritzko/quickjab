@@ -180,6 +180,11 @@ set_tests_properties(JABCfsw PROPERTIES TIMEOUT 20)
 if(EXISTS ${JAB_TEST}/qjab011.js)
     add_test(NAME JABCqjab011 COMMAND quickjab ${JAB_TEST}/qjab011.js)
 endif()
+# QJAB-009: a bareword require stays under THE require base — the candidates are
+# normalized and an escape throws.  Gated like JABCqjab011 (shared test repo).
+if(EXISTS ${JAB_TEST}/qjab009.js)
+    add_test(NAME JABCqjab009 COMMAND quickjab ${JAB_TEST}/qjab009.js)
+endif()
 add_test(NAME JABCnet COMMAND quickjab ${JAB_TEST}/net.js)
 add_test(NAME JABCnetGrow COMMAND quickjab ${JAB_TEST}/netgrow.js)
 # QJAB-004: the abc/HTTP lexer leaves — heads, partial feeds, a loopback over
