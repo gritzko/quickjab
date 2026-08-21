@@ -189,6 +189,11 @@ if(EXISTS ${JAB_TEST}/http.js)
     set_tests_properties(JABChttp PROPERTIES
         ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 endif()
+# QJAB-010: the compose leg's field filter — CR/LF/NUL and non-token bytes are
+# refused, not spelled.  Gated like JABChttp: the .js lives in the SHARED repo.
+if(EXISTS ${JAB_TEST}/qjab010.js)
+    add_test(NAME JABCqjab010 COMMAND quickjab ${JAB_TEST}/qjab010.js)
+endif()
 # JS-035: the zip test is a beagle-owned file — absent standalone, so gated.
 if(EXISTS ${CMAKE_SOURCE_DIR}/test/js/get/zip.js)
     add_test(NAME JABCzip COMMAND quickjab ${CMAKE_SOURCE_DIR}/test/js/get/zip.js)

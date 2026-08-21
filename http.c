@@ -98,9 +98,38 @@ static JABC_FN(JABChttpDrain) {
 
 //  --- feed (compose) -------------------------------------------------------
 
+//  QJAB-010: the RFC 7230 shape a head slot must have before it is spelled.
+//  TOKEN = tchar (method, field-name); TEXT = field-content (value, reason);
+//  BARE = the floor every slot keeps — no CR, no LF, no NUL.
+typedef enum { JHTTP_TOKEN, JHTTP_TEXT, JHTTP_BARE } jhttp_shape;
+
+//  QJAB-010: YES iff `b` may appear in a slot of that shape.  tchar is RFC
+//  7230 §3.2.6; field-content is VCHAR / SP / HTAB / obs-text, i.e. no CTL
+//  but the tab — the same byte sets abc/HTTP's grammar lexes (HTTP.c.rl:219).
+static b8 jhttp_byte(u8 b, jhttp_shape shape) {
+    if (shape == JHTTP_BARE) return b != '\r' && b != '\n' && b != 0;
+    if (shape == JHTTP_TEXT) return b == '\t' || (b >= 0x20 && b != 0x7f);
+    if (b >= '0' && b <= '9') return YES;
+    if (b >= 'a' && b <= 'z') return YES;
+    if (b >= 'A' && b <= 'Z') return YES;
+    a_cstr(tchar, "!#$%&'*+-.^_`|~");
+    $for(u8c, t, tchar) if (*t == b) return YES;
+    return NO;
+}
+
+//  QJAB-010: HTTPutf8Feed spells a slot verbatim, so a raw CRLF in it injects
+//  a header line or a whole second message.  Reject the head, never sanitize.
+static ok64 jhttp_valid(u8cs s, jhttp_shape shape) {
+    sane(s != NULL);
+    $for(u8c, p, s) if (!jhttp_byte(*p, shape)) fail(HTTPFAIL);
+    done;
+}
+
 //  QJAB-004: `v`'s bytes appended to the `txt` scratch; `out` spans them.  A
-//  missing slot stays a NULL slice, which HTTPutf8Feed skips.
-static ok64 jhttp_bytes(u8cs out, u8s txt, JSContext *ctx, JSValue v) {
+//  missing slot stays a NULL slice, which HTTPutf8Feed skips.  QJAB-010: the
+//  bytes are checked against `shape` first; a bad one fails the whole head.
+static ok64 jhttp_bytes(u8cs out, u8s txt, JSContext *ctx, JSValue v,
+                        jhttp_shape shape) {
     sane(out != NULL);
     zero$(out);
     if (JS_IsUndefined(v) || JS_IsNull(v)) {
@@ -113,7 +142,8 @@ static ok64 jhttp_bytes(u8cs out, u8s txt, JSContext *ctx, JSValue v) {
     if (s == NULL) fail(HTTPBAD);
     u8cs from = {(u8c *)s, (u8c *)s + len};
     out[0] = txt[0];
-    try(u8sFeed, txt, from);
+    try(jhttp_valid, from, shape);
+    then try(u8sFeed, txt, from);
     JS_FreeCString(ctx, s);
     out[1] = txt[0];
     done;
@@ -121,9 +151,9 @@ static ok64 jhttp_bytes(u8cs out, u8s txt, JSContext *ctx, JSValue v) {
 
 //  One component of the head object (`head.method`, `head.status`, …).
 static ok64 jhttp_slot(u8cs out, u8s txt, JSContext *ctx, JSValueConst head,
-                       const char *name) {
+                       const char *name, jhttp_shape shape) {
     sane(out != NULL);
-    call(jhttp_bytes, out, txt, ctx, JABCGetProp(ctx, head, name));
+    call(jhttp_bytes, out, txt, ctx, JABCGetProp(ctx, head, name), shape);
     done;
 }
 
@@ -143,9 +173,10 @@ static ok64 jhttp_slots(u8css into, u8s txt, JSContext *ctx,
     for (u32 i = 0; i < n; ++i) {
         JSValue pair = JS_GetPropertyUint32(ctx, hs, i);
         u8cs name = {}, val = {};
-        try(jhttp_bytes, name, txt, ctx, JS_GetPropertyUint32(ctx, pair, 0));
-        then try(jhttp_bytes, val, txt, ctx,
-                 JS_GetPropertyUint32(ctx, pair, 1));
+        try(jhttp_bytes, name, txt, ctx, JS_GetPropertyUint32(ctx, pair, 0),
+            JHTTP_TOKEN);
+        then try(jhttp_bytes, val, txt, ctx, JS_GetPropertyUint32(ctx, pair, 1),
+                 JHTTP_TEXT);
         JS_FreeValue(ctx, pair);
         then try(u8cssFeed1, into, name);
         then try(u8cssFeed1, into, val);
@@ -163,11 +194,18 @@ static ok64 jhttp_feed(u8cs out, JSContext *ctx, JSValueConst head) {
     a_carve(u8cs, pairs, JHTTP_TOKS);
     a_carve(u8, spelled, JHTTP_BYTES);
     HTTPstate http = {};
-    call(jhttp_slot, http.method, u8bIdle(txt), ctx, head, "method");
-    call(jhttp_slot, http.uri, u8bIdle(txt), ctx, head, "uri");
-    call(jhttp_slot, http.version, u8bIdle(txt), ctx, head, "version");
-    call(jhttp_slot, http.status_code, u8bIdle(txt), ctx, head, "status");
-    call(jhttp_slot, http.reason, u8bIdle(txt), ctx, head, "reason");
+    //  QJAB-010: uri/version/status keep the bare no-CR/LF/NUL floor — the
+    //  lexer takes any non-space byte in a URI, so a stricter rule would
+    //  refuse heads QJAB-004's drain->feed->drain round trip has to spell.
+    call(jhttp_slot, http.method, u8bIdle(txt), ctx, head, "method",
+         JHTTP_TOKEN);
+    call(jhttp_slot, http.uri, u8bIdle(txt), ctx, head, "uri", JHTTP_BARE);
+    call(jhttp_slot, http.version, u8bIdle(txt), ctx, head, "version",
+         JHTTP_BARE);
+    call(jhttp_slot, http.status_code, u8bIdle(txt), ctx, head, "status",
+         JHTTP_BARE);
+    call(jhttp_slot, http.reason, u8bIdle(txt), ctx, head, "reason",
+         JHTTP_TEXT);
     call(jhttp_slots, u8csbIdle(pairs), u8bIdle(txt), ctx, head);
     http.headers = u8csbData(pairs);
     call(HTTPutf8Feed, u8bIdle(spelled), &http);
@@ -184,6 +222,9 @@ static JABC_FN(JABChttpFeed) {
     u8cs out = {};
     ok64 r = jhttp_feed(out, ctx, argv[0]);
     if (r == SNOROOM) JABC_THROW("http: the message head is over 64K");
+    //  QJAB-010: a field that is not the shape RFC 7230 gives it — the CRLF
+    //  splitting vector among them — is refused here, in plain words.
+    if (r == HTTPFAIL) JABC_THROW("http: bad byte in a message head field");
     if (r != OK) JABC_THROW("http: the message head cannot be spelled");
     return JABCBlob(ctx, out[0], (size_t)u8csLen(out));
 }
