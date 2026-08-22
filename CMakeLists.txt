@@ -185,6 +185,11 @@ endif()
 if(EXISTS ${JAB_TEST}/qjab009.js)
     add_test(NAME JABCqjab009 COMMAND quickjab ${JAB_TEST}/qjab009.js)
 endif()
+# QJAB-006: a no-copy run view / a seek cursor may not outlive its mmap — the
+# views detach and the cursor re-cuts.  Gated like JABCqjab009 (shared repo).
+if(EXISTS ${JAB_TEST}/qjab006.js)
+    add_test(NAME JABCqjab006 COMMAND quickjab ${JAB_TEST}/qjab006.js)
+endif()
 add_test(NAME JABCnet COMMAND quickjab ${JAB_TEST}/net.js)
 add_test(NAME JABCnetGrow COMMAND quickjab ${JAB_TEST}/netgrow.js)
 # QJAB-004: the abc/HTTP lexer leaves — heads, partial feeds, a loopback over

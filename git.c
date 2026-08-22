@@ -22,7 +22,7 @@
 #include "dog/git/ODB.h"
 #include "dog/git/SHA1.h"
 
-#define GIT_MAX_OPEN 16  //  live repo handles
+#define GIT_MAX_OPEN 100  //  live repo handles (a board scans every worktree)
 
 //  A slot: the store plus the incarnation counter the pin is checked against.
 typedef struct {

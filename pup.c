@@ -52,6 +52,17 @@
 #define PUP_MAX_OPEN 32
 #define PUP_DICT_CELLS HIT_MAX_RUNS
 
+//  QJAB-006: ONE live no-copy view over run `i`'s mapping.  The handle owns
+//  the ArrayBuffer (the JS views JS mints all hang off it), so close/drop/put
+//  can DETACH it before dog unmaps the bytes — abc.close's move (cont.c:436:B6),
+//  minus the munmap: a retained view then reads empty, never freed pages.
+//  `base`/`len` say which mapping it wraps; a stale pair re-mints.
+typedef struct {
+    JSValue buf;
+    u8c *base;
+    size_t len;
+} pupview;
+
 typedef struct {
     Bkv64 pups;
     b8 live;
@@ -65,6 +76,15 @@ typedef struct {
     //  going down to dog, `mem` the row capacity JS reads back as `idx.mem`.
     u32 pages;
     u64 mem;
+    //  QJAB-006: the stack's version.  Every leaf that can unmap a run or move
+    //  the memtable's rows bumps it; a cursor cut at an older one re-cuts its
+    //  entries before it steps, so no pull ever walks a released mapping.
+    u64 epoch;
+    //  QJAB-006: the live run views, by run index (a run count past the cap is
+    //  refused everywhere else too); `nview` keeps the hot put path off the
+    //  sweep when the handle handed out nothing.
+    pupview view[HIT_MAX_RUNS];
+    u32 nview;
 } pupslot;
 
 static pupslot JABC_PUPS[PUP_MAX_OPEN];
@@ -88,6 +108,70 @@ static pupslot *JABCPupSlot(JSContext *ctx, int argc, JSValueConst *argv) {
     if (!JABCu64Of(&h, ctx, argv[0])) return NULL;
     if (h >= PUP_MAX_OPEN || !JABC_PUPS[h].live) return NULL;
     return &JABC_PUPS[h];
+}
+
+//  QJAB-006: blank every live view over this stack — the ArrayBuffer detaches
+//  (so a view JS still holds reads empty, length 0) and the handle's ref goes.
+static void JABCPupUnview(JSContext *ctx, pupslot *s) {
+    if (s->nview == 0) return;
+    for (u32 i = 0; i < HIT_MAX_RUNS; i++) {
+        pupview *v = &s->view[i];
+        if (v->base == NULL) continue;
+        JS_DetachArrayBuffer(ctx, v->buf);
+        JS_FreeValue(ctx, v->buf);
+        v->buf = JS_UNDEFINED;
+        v->base = NULL;
+        v->len = 0;
+    }
+    s->nview = 0;
+}
+
+//  QJAB-006: the mappings are about to move under their readers — detach the
+//  views FIRST (before the unmap, as abc.close does) and bump the epoch, so a
+//  cursor cut before this re-cuts its entries instead of stepping into them.
+static void JABCPupMoved(JSContext *ctx, pupslot *s) {
+    JABCPupUnview(ctx, s);
+    s->epoch++;
+}
+
+//  QJAB-006: a Uint8Array over run `i`'s bytes.  The ArrayBuffer is the
+//  HANDLE's (one per run index, its ref held here), every call mints a fresh
+//  view over it, and JABCPupUnview detaches the whole family at once.
+static JSValue JABCPupView(JSContext *ctx, pupslot *s, u32 i, u8cs run) {
+    size_t len = (size_t)u8csLen(run);
+    pupview *v = &s->view[i];
+    if (v->base != NULL) {
+        //  the app may have detached it itself (a transfer()), and a run index
+        //  can name another mapping after a drop — either way, re-mint.
+        size_t sz = 0;
+        u8 *p = JS_GetArrayBuffer(ctx, &sz, v->buf);
+        if (p == NULL) JS_FreeValue(ctx, JS_GetException(ctx));
+        if (p != (u8 *)(uintptr_t)v->base || sz != v->len || v->base != run[0] ||
+            v->len != len) {
+            JS_FreeValue(ctx, v->buf);
+            v->buf = JS_UNDEFINED;
+            v->base = NULL;
+            v->len = 0;
+            s->nview--;
+        }
+    }
+    if (v->base == NULL) {
+        JSValue ta = JABCBytesNoCopy(ctx, (u8 *)(uintptr_t)run[0], len, NULL,
+                                     NULL);
+        if (JS_IsException(ta)) return ta;
+        JSValue buf = JS_GetTypedArrayBuffer(ctx, ta, NULL, NULL, NULL);
+        JS_FreeValue(ctx, ta);  //  the handle keeps the BUFFER, not the view
+        if (JS_IsException(buf)) return buf;
+        v->buf = buf;
+        v->base = run[0];
+        v->len = len;
+        s->nview++;
+    }
+    JSValue a[3] = {JS_DupValue(ctx, v->buf), JS_NewInt64(ctx, 0),
+                    JS_NewInt64(ctx, (int64_t)len)};
+    JSValue r = JS_NewTypedArray(ctx, 3, a, JS_TYPED_ARRAY_UINT8);
+    for (u32 k = 0; k < 3; k++) JS_FreeValue(ctx, a[k]);
+    return r;
 }
 
 //  The lane element needles: pair lanes take ONE BigInt (the key, with the val
@@ -258,9 +342,18 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         return NULL;                                                           \
     }                                                                          \
     /*  the handle's ONE merged cursor: the entries advance in place, so each  \
-        _next re-Loads the pointer heap over them (HITSkipValue's shape). */   \
+        _next re-Loads the pointer heap over them (HITSkipValue's shape).      \
+        QJAB-006: the entries are RAW pointers into the runs and the memtable, \
+        so the cursor also carries where it stands (`K`, `X` = the bound was   \
+        pulled already), whether it is armed at all (`A`) and the stack epoch  \
+        it was cut at (`E`) — a mutating leaf moves the rows, and _next re-cuts\
+        rather than step into them. */                                         \
     static L##cs JABC_PUPCUR_##L[PUP_MAX_OPEN][HIT_MAX_RUNS];                  \
     static size_t JABC_PUPCURN_##L[PUP_MAX_OPEN];                              \
+    static L JABC_PUPCURK_##L[PUP_MAX_OPEN];                                   \
+    static b8 JABC_PUPCURX_##L[PUP_MAX_OPEN];                                  \
+    static b8 JABC_PUPCURA_##L[PUP_MAX_OPEN];                                  \
+    static u64 JABC_PUPCURE_##L[PUP_MAX_OPEN];                                 \
                                                                                \
     /*  the query sources: committed runs oldest->newest, then the memtable's  \
         PAST and DATA — 1 or 2 more HIT runs, never a special-cased path.      \
@@ -294,6 +387,33 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         *n = k;                                                                \
         u8csbFree(srcs);                                                       \
         u8csbFree(tocs);                                                       \
+        done;                                                                  \
+    }                                                                          \
+                                                                               \
+    /*  QJAB-006: cut the handle's cursor from the LIVE sources — every source \
+        at the first row past the bound (the seek needle, or the row already   \
+        pulled).  _seek cuts once; _next cuts again whenever a put/commit/drop \
+        moved the rows the entries pointed at. */                              \
+    static ok64 jpup_cut_##L(pupslot *s, size_t h) {                           \
+        sane(s != NULL && h < PUP_MAX_OPEN);                                   \
+        L##cs *ent = JABC_PUPCUR_##L[h];                                       \
+        size_t n = 0;                                                          \
+        JABC_PUPCURN_##L[h] = 0;                                               \
+        call(jpup_src_##L, ent, NULL, &n, s->pups);                            \
+        L const *key = &JABC_PUPCURK_##L[h];                                   \
+        b8 pulled = JABC_PUPCURX_##L[h];                                       \
+        size_t w = 0;                                                          \
+        for (size_t i = 0; i < n; i++) {                                       \
+            L const *pos = L##sFindGE(ent[i], key);                            \
+            /*  the bound itself is already emitted: skip its whole group */   \
+            while (pulled && pos < ent[i][1] && !L##Z(key, pos)) pos++;        \
+            if (pos >= ent[i][1]) continue;                                    \
+            ent[w][0] = pos;                                                   \
+            ent[w][1] = ent[i][1];                                             \
+            w++;                                                               \
+        }                                                                      \
+        JABC_PUPCURN_##L[h] = w;                                               \
+        JABC_PUPCURE_##L[h] = s->epoch;                                        \
         done;                                                                  \
     }                                                                          \
                                                                                \
@@ -342,6 +462,10 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         s->pages = (u32)pages;                                                 \
         s->mem = (u64)(pages * page / sizeof(L));                              \
         JABC_PUPCURN_##L[h] = 0;                                               \
+        JABC_PUPCURA_##L[h] = NO;                                              \
+        /*  QJAB-006: the slot is reused, so bump the epoch — a cursor left    \
+            armed by the PREVIOUS handle re-cuts before it ever steps. */      \
+        JABCPupMoved(ctx, s);                                                  \
         return JS_NewFloat64(ctx, (double)h);                                  \
     }                                                                          \
                                                                                \
@@ -355,6 +479,10 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!PUP_RD_##L(&row, ctx, argv[3])) JABC_FAIL;                        \
         PUP_PUTVAL_##L;                                                        \
         u8cs rec = {(u8c *)&row, (u8c *)(&row + 1)};                           \
+        /*  QJAB-006: a put syncs the memtable and a full one SEALS + ladders  \
+            — rows move, mappings go.  Detach the views and cut the cursor     \
+            loose BEFORE that, never after. */                                 \
+        JABCPupMoved(ctx, s);                                                  \
         ok64 o = DOGPupPutMem(s->pups, $path(dirp), $path(extp), rec,          \
                               &JABC_PUP_LANE_##L, s->pages);                   \
         if (o == HITTOOMANY) JABC_THROW(PUP_TOOMANY);                          \
@@ -374,6 +502,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         b8 durable = YES;                                                      \
         if (argc >= 4 && JS_IsBool(argv[3]))                                   \
             durable = (b8)(JS_ToBool(ctx, argv[3]) != 0);                      \
+        JABCPupMoved(ctx, s); /* QJAB-006: the seal + the ladder unmap runs */ \
         ok64 o = DOGPupCommitAs(s->pups, $path(dirp), $path(extp),             \
                                 &JABC_PUP_LANE_##L, durable);                  \
         if (o == HITTOOMANY) JABC_THROW(PUP_TOOMANY);                          \
@@ -473,19 +602,13 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         size_t h = (size_t)(s - JABC_PUPS);                                    \
         L needle = {};                                                         \
         if (!PUP_RD_##L(&needle, ctx, argv[1])) JABC_FAIL;                     \
-        L##cs *ent = JABC_PUPCUR_##L[h];                                       \
-        size_t n = 0;                                                          \
-        if (jpup_src_##L(ent, NULL, &n, s->pups) != OK)                        \
+        JABC_PUPCURK_##L[h] = needle; /* QJAB-006: the cursor's own bound */   \
+        JABC_PUPCURX_##L[h] = NO;     /* inclusive: nothing pulled yet */      \
+        JABC_PUPCURA_##L[h] = YES;                                             \
+        if (jpup_cut_##L(s, h) != OK) {                                        \
+            JABC_PUPCURA_##L[h] = NO;                                          \
             JABC_THROW(PUP_TOOMANY);                                           \
-        size_t w = 0;                                                          \
-        for (size_t i = 0; i < n; i++) {                                       \
-            L const *pos = L##sFindGE(ent[i], &needle);                        \
-            if (pos >= ent[i][1]) continue;                                    \
-            ent[w][0] = pos;                                                   \
-            ent[w][1] = ent[i][1];                                             \
-            w++;                                                               \
         }                                                                      \
-        JABC_PUPCURN_##L[h] = w;                                               \
         JABC_UNDEF;                                                            \
     }                                                                          \
                                                                                \
@@ -493,13 +616,23 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         pupslot *s = JABCPupSlot(ctx, argc, argv);                             \
         if (!s) JABC_THROW("_pup_" #L "_next(h)");                             \
         size_t h = (size_t)(s - JABC_PUPS);                                    \
+        if (!JABC_PUPCURA_##L[h]) JABC_UNDEF;                                  \
+        /*  QJAB-006: a put/commit since the cut sealed, merged or unmapped    \
+            the very rows the entries name — re-cut from the live sources. */  \
+        if (JABC_PUPCURE_##L[h] != s->epoch && jpup_cut_##L(s, h) != OK) {     \
+            JABC_PUPCURA_##L[h] = NO;                                          \
+            JABC_THROW(PUP_TOOMANY);                                           \
+        }                                                                      \
         L##cs *ent = JABC_PUPCUR_##L[h];                                       \
         L##css runs = {ent, ent + JABC_PUPCURN_##L[h]};                        \
         L##csp slots[HIT_MAX_RUNS];                                            \
         L##csps ph;                                                            \
         if (HIT##L##Load(ph, slots, runs) != OK) JABC_THROW(PUP_TOOMANY);      \
         JABC_PUPCURN_##L[h] = (size_t)$len(runs); /* Load compacts entries */  \
-        if ($empty(ph)) JABC_UNDEF;                                            \
+        if ($empty(ph)) {                                                      \
+            JABC_PUPCURA_##L[h] = NO; /* spent: a later put reopens nothing */ \
+            JABC_UNDEF;                                                        \
+        }                                                                      \
         L const *top = (*ph[0])[0];                                            \
         L val = *top;                                                          \
         JSValue el = PUP_EMIT_##L;                                             \
@@ -508,6 +641,8 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         while (!$empty(ph) && !L##Z((*ph[0])[0], &val) &&                      \
                !L##Z(&val, (*ph[0])[0]))                                       \
             HIT##L##Step(ph);                                                  \
+        JABC_PUPCURK_##L[h] = val; /* QJAB-006: where a re-cut resumes from */ \
+        JABC_PUPCURX_##L[h] = YES;                                             \
         return el;                                                             \
     }                                                                          \
                                                                                \
@@ -522,15 +657,17 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!s || argc < 2) JABC_THROW("_pup_" #L "_run(h, i)");               \
         u64 i = 0;                                                             \
         if (!JABCu64Of(&i, ctx, argv[1])) JABC_FAIL;                           \
-        if (i >= DOGPupCount(s->pups)) JABC_THROW("no such index run");        \
+        if (i >= DOGPupCount(s->pups) || i >= HIT_MAX_RUNS)                    \
+            JABC_THROW("no such index run");                                   \
         u8cs run = {};                                                         \
         /*  DOG-035: the marker audit reads ROWS — the ToC block is clipped */ \
         DOGPupDataRow(run, s->pups, (u32)i, (u32)sizeof(L));                   \
         if (run[0] == NULL) JABC_THROW("no such index run");                   \
-        /*  the view BORROWS the Pup's mapping — drop/close unmaps it, so it   \
-            must not outlive the handle (it is the marker-audit path). */      \
-        return JABCBytesNoCopy(ctx, (u8 *)(uintptr_t)run[0],                   \
-                               (size_t)u8csLen(run), NULL, NULL);              \
+        /*  QJAB-006: the view BORROWS the Pup's mapping, so the HANDLE keeps  \
+            its ArrayBuffer and detaches it the moment anything unmaps — a     \
+            view held past a put/commit/drop/close reads empty, not freed      \
+            pages (it is the marker-audit path). */                            \
+        return JABCPupView(ctx, s, (u32)i, run);                               \
     }                                                                          \
                                                                                \
     static JABC_FN(jpup_##L##_drop) {                                          \
@@ -539,7 +676,11 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!s->rw) JABC_THROW("this index is open read-only");                \
         if (s->busy) JABC_THROW(PUP_BUSY); /* QJAB-005 */                      \
         PUP_PATHS(1);                                                          \
+        /*  QJAB-006: the dropped run's mapping goes — detach its views, and   \
+            the cursor's runs are the dropped ones' too, so it is spent. */    \
+        JABCPupMoved(ctx, s);                                                  \
         JABC_PUPCURN_##L[(size_t)(s - JABC_PUPS)] = 0; /* the cursor's runs */ \
+        JABC_PUPCURA_##L[(size_t)(s - JABC_PUPS)] = NO;                        \
         if (argc < 4 || JS_IsUndefined(argv[3])) {                             \
             /*  drop() = every run: the family found no marker, re-derives */  \
             if (DOGPupThinTail(s->pups, $path(dirp), $path(extp),              \
@@ -559,10 +700,14 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!s) JABC_THROW("_pup_" #L "_close(h)");                            \
         if (s->busy) JABC_THROW(PUP_BUSY); /* QJAB-005 */                      \
         size_t h = (size_t)(s - JABC_PUPS);                                    \
+        /*  QJAB-006: every mapping this handle lent JS goes here — detach the \
+            views BEFORE the unmap, the way abc.close moves its own. */        \
+        JABCPupMoved(ctx, s);                                                  \
         DOGPupClose(s->pups);                                                  \
         zero(s->pups);                                                         \
         s->live = NO;                                                          \
         JABC_PUPCURN_##L[h] = 0;                                               \
+        JABC_PUPCURA_##L[h] = NO;                                              \
         JABC_UNDEF;                                                            \
     }
 
@@ -598,5 +743,13 @@ ok64 JABCInstallPup(JSContext *ctx, JSValueConst global) {
     PUP_REG(u64);
     JABC_API_FN(abc, "_pup_mem", jpup_mem);
     JABC_API_END(abc);
+    return OK;
+}
+
+//  QJAB-006: a handle left open at exit still owns the ArrayBuffers of its
+//  live run views — drop them (detached, so nothing can read the mapping the
+//  teardown is about to release) while the context is still alive.
+ok64 JABCUninstallPup(JSContext *ctx) {
+    for (int i = 0; i < PUP_MAX_OPEN; i++) JABCPupUnview(ctx, &JABC_PUPS[i]);
     return OK;
 }

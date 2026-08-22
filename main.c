@@ -376,6 +376,8 @@ int main(int argc, char **argv) {
     //  Drop the protected pol router refs + free the poll heap while the
     //  context is still alive (they are JS values).
     JABCUninstallPol(JABC_CONTEXT);
+    //  QJAB-006: same shape — pup owns an ArrayBuffer per live run view.
+    JABCUninstallPup(JABC_CONTEXT);
     //  Release the context first so the no-copy free_funcs (FILEUnMap/munmap)
     //  run while the FILE subsystem is still alive; then tear it down
     //  (FILECloseAll frees FILE_RW).

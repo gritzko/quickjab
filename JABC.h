@@ -198,6 +198,9 @@ b8 JABCJsrcPacked(void);
 //  Teardown twins: pol drops its protected router refs while the context is
 //  still alive; io closes what the JS side no longer owns (after the context).
 ok64 JABCUninstallPol(JSContext *ctx);
+//  QJAB-006: pup holds one ArrayBuffer per live run view (so close/drop can
+//  detach it) — those refs go here, while the context is still alive.
+ok64 JABCUninstallPup(JSContext *ctx);
 ok64 JABCUninstallIo(void);
 //  STATUS-020: frees the recycled igno boxes (see igno.c on why they are kept).
 ok64 JABCUninstallIgno(void);
