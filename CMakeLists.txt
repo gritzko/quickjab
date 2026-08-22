@@ -180,6 +180,11 @@ set_tests_properties(JABCfsw PROPERTIES TIMEOUT 20)
 if(EXISTS ${JAB_TEST}/qjab011.js)
     add_test(NAME JABCqjab011 COMMAND quickjab ${JAB_TEST}/qjab011.js)
 endif()
+# QJAB-008: the HASH capacity guard — the _hash_* leaves refuse a zero or
+# non-power-of-two region, abc.ram/mmap round up.  Gated like JABCqjab011.
+if(EXISTS ${JAB_TEST}/qjab008.js)
+    add_test(NAME JABCqjab008 COMMAND quickjab ${JAB_TEST}/qjab008.js)
+endif()
 # QJAB-009: a bareword require stays under THE require base — the candidates are
 # normalized and an escape throws.  Gated like JABCqjab011 (shared test repo).
 if(EXISTS ${JAB_TEST}/qjab009.js)

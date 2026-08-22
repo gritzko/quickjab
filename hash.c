@@ -74,13 +74,25 @@ fun b8 sha256hashEq(sha256 const *a, sha256 const *b) {
 #include "abc/HASHx.h"
 #undef X
 
+//  QJAB-008: abc masks the slot with `len - 1` and displaces within a line of
+//  ABC_HASH_LINE slots (HASHx.h), which HASHx.h #undefs — mirrored here.
+#define JABC_HASH_LINE 16
+
 //  A lane array's backing: base pointer + capacity in ELEMENTS (jab: cont.hpp).
+//  QJAB-008: a capacity that is not a whole power-of-two multiple of the line
+//  makes every abc HASH op read and write past the region — refuse it here.
 static b8 JABCLaneArr(void **base, size_t *cap, JSContext *ctx,
                       JSValueConst arg, size_t esz) {
     u8 *b[4] = {};
     if (!JABCDataOf(b, ctx, arg)) return NO;
+    size_t n = u8bDataLen(b) / esz;
+    if (n < JABC_HASH_LINE || (n & (n - 1))) {
+        JABCThrowError(ctx, "hash: the table needs a power-of-two slot count "
+                            "of at least 16 (use abc.ram/abc.mmap)");
+        return NO;
+    }
     *base = (void *)u8bData(b)[0];
-    *cap = u8bDataLen(b) / esz;
+    *cap = n;
     return YES;
 }
 
