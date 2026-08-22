@@ -59,7 +59,10 @@ static b8 JABCLaneArr(void **base, size_t *cap, JSContext *ctx,
 
 //  A JS number argument as a plain double (the lane cast follows) — jab's
 //  JSValueToNumber, minus the out-param.
+//  QJAB-005: the lane array is already unwrapped when `v` is read, so an
+//  object's valueOf here would be JS holding a raw base — JABCScalar refuses it.
 static b8 JABCNumOf(double *out, JSContext *ctx, JSValueConst arg) {
+    if (!JABCScalar(ctx, arg)) return NO;
     return JS_ToFloat64(ctx, out, arg) < 0 ? NO : YES;
 }
 

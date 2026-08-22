@@ -64,6 +64,27 @@ static b8 JABCIdxU64(u64 *out, JSContext *ctx, JSValueConst *argv, size_t i) {
     return JABCBigU64Of(out, ctx, argv[i]);
 }
 
+//  QJAB-005 + QJAB-011: the shared collect-then-unwrap, plus the lane's
+//  8-byte gate.  `base`/`len` keep what each view was, for the re-assert below.
+static b8 JABCIdxRuns(u8 const **base, size_t *len, JSValue *rv, size_t n,
+                      JSContext *ctx, JSValueConst arr) {
+    if (!JABCRunsOf(base, len, rv, n, ctx, arr)) return NO;
+    for (size_t i = 0; i < n; i++)
+        if (!JABCLaneAligned(ctx, base[i])) {
+            JABCRunsFree(rv, n, ctx);
+            return NO;
+        }
+    return YES;
+}
+
+//  QJAB-005: after a per-hit cb, every run must still be the same memory.
+static b8 JABCIdxRunsSame(JSContext *ctx, JSValue *rv, u8 const **base,
+                          size_t const *len, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (!JABCViewSame(ctx, rv[i], base[i], len[i])) return NO;
+    return YES;
+}
+
 //  YES iff the cb's return value says "stop": exactly `false`, or "enough".
 static b8 JABCIdxStop(JSContext *ctx, JSValueConst r) {
     if (JS_IsBool(r)) return JS_ToBool(ctx, r) ? NO : YES;
@@ -81,11 +102,11 @@ static b8 JABCIdxStop(JSContext *ctx, JSValueConst r) {
 #define FINDGE_LEAF(L, ARGN, RDNEEDLE)                                     \
     static JABC_FN(jfindge_##L) {                                          \
         if (argc < 1 + (ARGN)) JABC_THROW("_findge_" #L "(run, needle…)"); \
+        L needle;                                                          \
+        if (!RDNEEDLE) JABC_FAIL; /* QJAB-005: the needle FIRST */          \
         void *base;                                                        \
         size_t cap;                                                        \
         if (!JABCLaneArr(&base, &cap, ctx, argv[0], sizeof(L))) JABC_FAIL; \
-        L needle;                                                          \
-        if (!RDNEEDLE) JABC_FAIL;                                          \
         L *bb = (L *)base;                                                 \
         L##cs run = {bb, bb + cap};                                        \
         L const *pos = L##sFindGE(run, &needle);                           \
@@ -111,37 +132,46 @@ static b8 JABCIdxStop(JSContext *ctx, JSValueConst r) {
         JSValueConst cb = argv[1 + 2 * (ARGN)];                               \
         if (!JS_IsFunction(ctx, cb))                                          \
             JABC_THROW("_seekrange: cb must be a function");                  \
+        /* QJAB-005: collect, then unwrap; rv[] stays alive for the re-assert*/\
+        JSValue rv[HIT_MAX_RUNS];                                             \
+        u8 const *rb[HIT_MAX_RUNS];                                           \
+        size_t rn[HIT_MAX_RUNS];                                              \
+        if (!JABCIdxRuns(rb, rn, rv, N, ctx, argv[0])) JABC_FAIL;             \
         L##cs ent[HIT_MAX_RUNS];                                              \
         for (size_t i = 0; i < N; i++) {                                      \
-            JSValue el = JS_GetPropertyUint32(ctx, argv[0], (uint32_t)i);     \
-            u8 *bb[4] = {};                                                   \
-            b8 ok = JABCDataOf(bb, ctx, el);                                  \
-            JS_FreeValue(ctx, el);                                            \
-            if (!ok) JABC_FAIL;                                               \
-            u8 const *const *b = u8bDataC(bb);                                \
-            if (!JABCLaneAligned(ctx, b[0])) JABC_FAIL; /* QJAB-011 */        \
-            ent[i][0] = (const L *)b[0];                                      \
-            ent[i][1] = (const L *)b[1];                                      \
+            ent[i][0] = (const L *)rb[i];                                     \
+            ent[i][1] = (const L *)(rb[i] + rn[i]);                           \
         }                                                                     \
         L##css heap = {ent, ent + N};                                         \
         HIT##L##SeekRange(heap, &lo, &hi);                                    \
         /* DOG-027: drain via the pointer heap; entries stay oldest-first */  \
         L##csp slots[HIT_MAX_RUNS];                                           \
         L##csps ph;                                                           \
-        if (HIT##L##Load(ph, slots, heap) != OK)                              \
+        if (HIT##L##Load(ph, slots, heap) != OK) {                            \
+            JABCRunsFree(rv, N, ctx);                                         \
             JABC_THROW(                                                       \
                 "too many index runs: drop them and re-derive the index");    \
+        }                                                                     \
         while (!$empty(ph)) {                                                 \
             L const *top = (*ph[0])[0];                                       \
             JSValue el = EMIT;                                                \
             JSValue r = JS_Call(ctx, cb, JS_UNDEFINED, 1, &el);               \
             JS_FreeValue(ctx, el);                                            \
-            if (JS_IsException(r)) JABC_FAIL;                                 \
+            if (JS_IsException(r)) {                                          \
+                JABCRunsFree(rv, N, ctx);                                     \
+                JABC_FAIL;                                                    \
+            }                                                                 \
             b8 stop = JABCIdxStop(ctx, r);                                    \
             JS_FreeValue(ctx, r);                                             \
+            /* QJAB-005: the cb was JS — every run must still be there */     \
+            if (!JABCIdxRunsSame(ctx, rv, rb, rn, N)) {                       \
+                JABCRunsFree(rv, N, ctx);                                     \
+                JABC_FAIL;                                                    \
+            }                                                                 \
             if (stop) break;                                                  \
             HIT##L##Step(ph);                                                 \
         }                                                                     \
+        JABCRunsFree(rv, N, ctx);                                             \
         JABC_UNDEF;                                                           \
     }
 
@@ -157,30 +187,33 @@ static b8 JABCIdxStop(JSContext *ctx, JSValueConst r) {
         if (N > HIT_MAX_RUNS)                                                 \
             JABC_THROW(                                                       \
                 "too many index runs: drop them and re-derive the index");    \
+        /* QJAB-005: collect, then unwrap — no getter runs between the two */ \
+        JSValue rv[HIT_MAX_RUNS];                                             \
+        u8 const *rb[HIT_MAX_RUNS];                                           \
+        size_t rn[HIT_MAX_RUNS];                                              \
+        if (!JABCIdxRuns(rb, rn, rv, N, ctx, argv[0])) JABC_FAIL;             \
         L##cs ent[HIT_MAX_RUNS];                                              \
         for (size_t i = 0; i < N; i++) {                                      \
-            JSValue el = JS_GetPropertyUint32(ctx, argv[0], (uint32_t)i);     \
-            u8 *bb[4] = {};                                                   \
-            b8 ok = JABCDataOf(bb, ctx, el);                                  \
-            JS_FreeValue(ctx, el);                                            \
-            if (!ok) JABC_FAIL;                                               \
-            u8 const *const *b = u8bDataC(bb);                                \
-            if (!JABCLaneAligned(ctx, b[0])) JABC_FAIL; /* QJAB-011 */        \
-            ent[i][0] = (const L *)b[0];                                      \
-            ent[i][1] = (const L *)b[1];                                      \
+            ent[i][0] = (const L *)rb[i];                                     \
+            ent[i][1] = (const L *)(rb[i] + rn[i]);                           \
         }                                                                     \
         u8 *db4[4] = {};                                                      \
-        if (!JABCDataOf(db4, ctx, argv[1])) JABC_FAIL;                        \
+        b8 ok = JABCDataOf(db4, ctx, argv[1]) &&                              \
+                JABCLaneAligned(ctx, u8bData(db4)[0]); /* QJAB-011 */         \
+        if (!ok) {                                                            \
+            JABCRunsFree(rv, N, ctx);                                         \
+            JABC_FAIL;                                                        \
+        }                                                                     \
         u8 *const *d = u8bData(db4);                                          \
-        if (!JABCLaneAligned(ctx, d[0])) JABC_FAIL; /* QJAB-011 */            \
         L *base = (L *)d[0];                                                  \
         L##s into = {base, (L *)d[1]};                                        \
         L##css stack = {ent, ent + N};                                        \
         size_t before = $len(stack);                                          \
-        if (HIT##L##Compact(stack, into) != OK)                               \
-            JABC_THROW("_compact: out too small");                            \
+        ok64 co = HIT##L##Compact(stack, into);                               \
         size_t m = before - $len(stack) + 1;                                  \
         size_t merged = (size_t)((*into) - base);                             \
+        JABCRunsFree(rv, N, ctx); /* the runs outlive every read of them */   \
+        if (co != OK) JABC_THROW("_compact: out too small");                  \
         if (m < 2) merged = 0; /* nothing collapsed; out is untouched */      \
         return JABCPair(ctx, JS_NewFloat64(ctx, (double)merged),              \
                         JS_NewFloat64(ctx, (double)m));                       \

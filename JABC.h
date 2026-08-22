@@ -76,10 +76,12 @@ b8 JABCBigU64Of(u64 *out, JSContext *ctx, JSValueConst arg);
 JSValue JABCPair(JSContext *ctx, JSValue a, JSValue b);
 //  A fresh engine-owned Uint8Array of `n` bytes copied from `data`.
 JSValue JABCBlob(JSContext *ctx, const u8 *data, size_t n);
-//  No-copy: a Uint8Array over caller memory.  `freef` replaces the JSC
-//  deallocator 1:1 (NULL for rodata), `opaque` rides along to it.
+//  No-copy: a Uint8Array over caller memory.  `freef` is a free-style
+//  deallocator (NULL for rodata), `opaque` rides along to it; arg.c bridges
+//  it to quickjs-ng 0.16's realloc-style callback (QJAB qjs bump).
+typedef void JABCFreeFunc(JSRuntime *rt, void *opaque, void *ptr);
 JSValue JABCBytesNoCopy(JSContext *ctx, u8 *p, size_t n,
-                        JSFreeArrayBufferDataFunc *freef, void *opaque);
+                        JABCFreeFunc *freef, void *opaque);
 //  A Uint8Array over the SAME buffer as `view` at (off, len) — the subview
 //  surgery hunk/hit do (JSObjectGetTypedArrayBuffer + WithArrayBufferAndOffset).
 JSValue JABCSubView(JSContext *ctx, JSValueConst view, size_t off, size_t len);
@@ -95,6 +97,10 @@ void JABCSetProp(JSContext *ctx, JSValueConst o, const char *name, JSValue v);
 //  A JS number is untrusted input — never cast one to size_t and never add it
 //  to a pointer.  These gates gain their bounds from abc (u8bUsed / u8csLen);
 //  a binding that builds a slice by hand is a bug, see arg.c for why.
+//  QJAB-005: a number arg must be a PRIMITIVE — an object's valueOf is JS, and
+//  JS run mid-leaf can free the very buffer the leaf holds.  Every gate below
+//  starts here, so no JS_ToFloat64/JS_ToInt64Ext in the bindings re-enters.
+b8 JABCScalar(JSContext *ctx, JSValueConst arg);
 b8 JABCu64Of(u64 *out, JSContext *ctx, JSValueConst arg);
 b8 JABCi64Of(i64 *out, JSContext *ctx, JSValueConst arg);
 b8 JABCu32Of(u32 *out, JSContext *ctx, JSValueConst arg);
@@ -111,9 +117,25 @@ b8 JABCIdleOf(u8b buf, JSContext *ctx, JSValueConst arg);
 b8 JABCOffOf(size_t *out, u8csc whole, JSContext *ctx, JSValueConst arg);
 b8 JABCBufAt(u8b buf, JSContext *ctx, JSValueConst arg);
 b8 JABCBufFed(u8b buf, JSContext *ctx, JSValueConst arg);
+//  QJAB-005: JABCBufFed's already-gated half, for a leaf that coerces the
+//  offset BEFORE it unwraps the view (zip.c) — the ordering the ticket asks for.
+b8 JABCBufFedAt(u8b buf, JSContext *ctx, u64 off);
+//  QJAB-005: is `arg` STILL the same memory JABCViewOf/JABCDataOf/JABCIdleOf
+//  handed out?  The re-validate every callback leaf runs after each JS_Call —
+//  transfer() detaches and frees, resize() moves.  Throws on a mismatch.
+b8 JABCViewSame(JSContext *ctx, JSValueConst arg, u8 const *base, size_t len);
+//  QJAB-005: a runs[] array of typed arrays — every element is COLLECTED
+//  before any is unwrapped (an element getter is JS), and `view[]` keeps the
+//  refs alive for as long as base[]/len[] are read.  JABCRunsFree drops them.
+b8 JABCRunsOf(u8 const **base, size_t *len, JSValue *view, size_t n,
+              JSContext *ctx, JSValueConst arr);
+void JABCRunsFree(JSValue *view, size_t n, JSContext *ctx);
 //  A JS Buf object ({bytes,_data,_idle}) as a u8b, cursors validated; hand
 //  the advanced boundaries back with JABCBufBack.
 b8 JABCBufOf(u8b buf, JSContext *ctx, JSValueConst arg);
+//  ... and the same, keeping an owned ref to the `bytes` view so a leaf that
+//  re-enters JS can JABCViewSame it (QJAB-005).  Caller JS_FreeValue's it.
+b8 JABCBufOfKeep(u8b buf, JSValue *view, JSContext *ctx, JSValueConst arg);
 void JABCBufBack(JSContext *ctx, JSValueConst bo, u8b buf);
 //  Copy a JS-string path argument into a NUL-terminated path buffer.
 ok64 JABCPath(path8b path, JSContext *ctx, JSValueConst arg);

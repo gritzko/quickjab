@@ -4,3 +4,6 @@
 [submodule "test"]
 	path = test
 	url = https://github.com/gritzko/jab-tests.git
+[submodule "qjs"]
+	path = qjs
+	url = https://github.com/quickjs-ng/quickjs.git

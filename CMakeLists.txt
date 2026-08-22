@@ -194,6 +194,14 @@ if(EXISTS ${JAB_TEST}/http.js)
     set_tests_properties(JABChttp PROPERTIES
         ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 endif()
+# QJAB-005: the buffer-view TOCTOU — a `valueOf` that detaches and a callback
+# that transfer()s must throw or no-op, never write through a freed base.
+# Gated like JABCqjab011 (the .js lives in the SHARED test repo).
+if(EXISTS ${JAB_TEST}/qjab005.js)
+    add_test(NAME JABCqjab005 COMMAND quickjab ${JAB_TEST}/qjab005.js)
+    set_tests_properties(JABCqjab005 PROPERTIES
+        ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
+endif()
 # QJAB-010: the compose leg's field filter — CR/LF/NUL and non-token bytes are
 # refused, not spelled.  Gated like JABChttp: the .js lives in the SHARED repo.
 if(EXISTS ${JAB_TEST}/qjab010.js)

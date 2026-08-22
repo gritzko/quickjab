@@ -442,27 +442,42 @@ static JSValue JABCPackStats(JSContext *ctx, repack_stat const *st) {
 
 //  Progress: one JS call every `every` objects, the live stats as its arg.
 //  A throwing handler stops the run (its exception is re-raised below).
+//  QJAB-005: the handler is JS, and REPACKRun keeps writing through the two
+//  bases the leaf took (the Buf's `bytes` and opts.index) after it returns —
+//  so the watch carries both views and re-asserts them after every fire.  A
+//  handler that transfer()s or resizes either one ENDS the run, it does not
+//  get a second pass over freed heap.
 typedef struct {
     JSContext *ctx;
     JSValue fn;
     JSValue exc;
     b8 threw;
+    JSValue bufv, ixv;  //  the two typed arrays, owned/borrowed by the leaf
+    u8 const *bufb, *ixb;
+    size_t bufn, ixn;
 } jabc_repack_watch;
+
+//  Hold the FIRST throw; REPACKRun unwinds to the leaf, which re-raises it.
+static ok64 JABCPackHold(jabc_repack_watch *w) {
+    if (!w->threw) {
+        w->exc = JS_GetException(w->ctx);
+        w->threw = YES;
+    }
+    return REPACKFAIL;
+}
 
 static ok64 JABCPackWatch(void *user, repack_stat const *st) {
     jabc_repack_watch *w = (jabc_repack_watch *)user;
     JSValue arg = JABCPackStats(w->ctx, st);
     JSValue r = JS_Call(w->ctx, w->fn, JS_UNDEFINED, 1, (JSValueConst *)&arg);
     JS_FreeValue(w->ctx, arg);
-    if (!JS_IsException(r)) {
-        JS_FreeValue(w->ctx, r);
-        return OK;
-    }
-    if (!w->threw) {  //  hold the FIRST throw; REPACKRun unwinds to the leaf
-        w->exc = JS_GetException(w->ctx);
-        w->threw = YES;
-    }
-    return REPACKFAIL;
+    if (JS_IsException(r)) return JABCPackHold(w);
+    JS_FreeValue(w->ctx, r);
+    //  QJAB-005: the re-validate — both regions must be the SAME memory.
+    if (!JABCViewSame(w->ctx, w->bufv, w->bufb, w->bufn) ||
+        !JABCViewSame(w->ctx, w->ixv, w->ixb, w->ixn))
+        return JABCPackHold(w);
+    return OK;
 }
 
 //  Errors cross the boundary in PLAIN WORDS, never as an ok64 code.
@@ -492,6 +507,13 @@ static const char *JABCPackWords(ok64 o) {
 //    opts.index   caller's wh128 region for the index entries
 //    opts.every   progress granularity in objects
 //    opts.onStep  progress handler, called with the live stats
+//  The three refs the leaf holds across REPACKRun: opts.index, the Buf's
+//  `bytes` view (JABCBufOfKeep) and the onStep handler.  Dropped on every exit.
+#define JABC_PACK_DROP         \
+    JS_FreeValue(ctx, iv);     \
+    JS_FreeValue(ctx, w.bufv); \
+    JS_FreeValue(ctx, w.fn)
+
 static JABC_FN(JABCpackRepack) {
     if (argc < 3) JABC_THROW("git.pack(fd, buf, shard, opts) -> stats");
     i64 fdv = -1;
@@ -499,44 +521,70 @@ static JABC_FN(JABCpackRepack) {
     int fd = (int)fdv;
     if (fdv < 0 || fdv != (i64)fd) JABC_THROW("git.pack: bad fd");
     if (!JS_IsObject(argv[1])) JABC_THROW("git.pack: buf must be a Buf");
-    u8 *buf[4] = {};  //  cursors gated + checked in arg.c
-    if (!JABCBufOf(buf, ctx, argv[1])) JABC_FAIL;
 
     a_pad(u8, shard, FILE_PATH_MAX_LEN);
     if (JABCPath(shard, ctx, argv[2]) != OK)
         JABC_THROW("git.pack: bad shard path");
 
+    //  QJAB-005: EVERY opts read happens HERE, before a single base is taken.
+    //  `opts.cap` is a getter and a valueOf away from arbitrary JS, and so is
+    //  `opts.index` itself — reading them after the unwraps let a crafted opts
+    //  object free the Buf that REPACKRun then reads a pack into.
     JSValueConst oo = (argc > 3 && JS_IsObject(argv[3])) ? argv[3] : JS_NULL;
-    u8 *ixb[4] = {};
-    b8 haveix = NO;
-    if (JS_IsObject(oo)) {
-        JSValue iv = JABCGetProp(ctx, oo, "index");
-        haveix = JABCIdleOf(ixb, ctx, iv);
-        JS_FreeValue(ctx, iv);
-    }
-    if (!haveix) {
-        if (JS_HasException(ctx)) JABC_FAIL;
-        JABC_THROW("git.pack: opts.index (a wh128 region) is required");
-    }
-    wh128 *ib = (wh128 *)u8bIdle(ixb)[0];
-    if (((uintptr_t)ib & 7u) != 0)
-        JABC_THROW("git.pack: opts.index is not 8-byte aligned");
-    wh128 *icap = ib + u8bIdleLen(ixb) / sizeof(wh128);
-    wh128 *ibuf[4] = {ib, ib, ib, icap};
-
+    repack_conf conf = {};
+    conf.cap = JABCOptNumOf(ctx, oo, "cap", 0);
+    conf.log0 = (u32)JABCOptNumOf(ctx, oo, "log0", 0);
+    conf.every = JABCOptNumOf(ctx, oo, "every", 0);
     jabc_repack_watch w = {ctx, JS_UNDEFINED, JS_UNDEFINED, NO};
+    JSValue iv = JS_UNDEFINED;
     if (JS_IsObject(oo)) {
         JSValue cb = JABCGetProp(ctx, oo, "onStep");
         if (JS_IsFunction(ctx, cb))
             w.fn = cb;
         else
             JS_FreeValue(ctx, cb);
+        iv = JABCGetProp(ctx, oo, "index");
     }
-    repack_conf conf = {};
-    conf.cap = JABCOptNumOf(ctx, oo, "cap", 0);
-    conf.log0 = (u32)JABCOptNumOf(ctx, oo, "log0", 0);
-    conf.every = JABCOptNumOf(ctx, oo, "every", 0);
+
+    //  --- no JS below this line until REPACKRun's own watch fires ----------
+    u8 *buf[4] = {};  //  cursors gated + checked in arg.c
+    if (!JABCBufOfKeep(buf, &w.bufv, ctx, argv[1])) {
+        JABC_PACK_DROP;
+        JABC_FAIL;
+    }
+    u8 *ixb[4] = {};
+    if (JS_IsUndefined(iv) || !JABCIdleOf(ixb, ctx, iv)) {
+        b8 had = JS_HasException(ctx);
+        JABC_PACK_DROP;
+        if (had) JABC_FAIL;
+        JABC_THROW("git.pack: opts.index (a wh128 region) is required");
+    }
+    wh128 *ib = (wh128 *)u8bIdle(ixb)[0];
+    if (((uintptr_t)ib & 7u) != 0) {
+        JABC_PACK_DROP;
+        JABC_THROW("git.pack: opts.index is not 8-byte aligned");
+    }
+    wh128 *icap = ib + u8bIdleLen(ixb) / sizeof(wh128);
+    wh128 *ibuf[4] = {ib, ib, ib, icap};
+
     if (!JS_IsUndefined(w.fn)) {
+        //  What the watch re-asserts after every fire (QJAB-005): the two
+        //  views AS THEY ARE NOW — no JS has run since they were unwrapped.
+        u8 *p = NULL;
+        size_t n = 0;
+        w.ixv = iv;
+        if (!JABCViewOf(&p, &n, ctx, w.bufv)) {
+            JABC_PACK_DROP;
+            JABC_FAIL;
+        }
+        w.bufb = p;
+        w.bufn = n;
+        if (!JABCViewOf(&p, &n, ctx, w.ixv)) {
+            JABC_PACK_DROP;
+            JABC_FAIL;
+        }
+        w.ixb = p;
+        w.ixn = n;
         conf.watch = JABCPackWatch;
         conf.user = &w;
         if (conf.every == 0) conf.every = 100000;
@@ -547,7 +595,7 @@ static JABC_FN(JABCpackRepack) {
     //  Hand the consumed/filled boundaries back to the caller's Buf either
     //  way — a failed run still ate what it ate.
     JABCBufBack(ctx, argv[1], buf);
-    JS_FreeValue(ctx, w.fn);
+    JABC_PACK_DROP;
     if (w.threw) return JS_Throw(ctx, w.exc);  //  the handler's own throw
     if (r != OK) JABC_THROW(JABCPackWords(r));
     return JABCPackStats(ctx, &st);

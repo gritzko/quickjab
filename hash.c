@@ -84,7 +84,10 @@ static b8 JABCLaneArr(void **base, size_t *cap, JSContext *ctx,
     return YES;
 }
 
+//  QJAB-005: the lane array is already unwrapped when the key is read, so an
+//  object's valueOf here would be JS holding a raw base — JABCScalar refuses it.
 static b8 JABCNumOf(double *out, JSContext *ctx, JSValueConst arg) {
+    if (!JABCScalar(ctx, arg)) return NO;
     return JS_ToFloat64(ctx, out, arg) < 0 ? NO : YES;
 }
 

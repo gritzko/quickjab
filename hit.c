@@ -96,11 +96,11 @@ static void JABCHitFree(JSRuntime *rt, void *opaque, void *ptr) { free(ptr); }
     static JABC_FN(jsort_##L) {                                               \
         /* JS-101: argc guard — short-armed calls must throw, not read OOB */ \
         if (argc < 2) JABC_THROW("_sort_" #L "(arr, size)");                  \
+        u64 n = 0;                                                            \
+        if (!JABCu64Of(&n, ctx, argv[1])) JABC_FAIL; /* QJAB-005: size 1st */ \
         void *base;                                                           \
         size_t cap;                                                           \
         if (!JABCLaneArr(&base, &cap, ctx, argv[0], sizeof(L))) JABC_FAIL;    \
-        u64 n = 0;                                                            \
-        if (!JABCu64Of(&n, ctx, argv[1])) JABC_FAIL;                          \
         if (n > cap) n = cap;                                                 \
         L *bb = (L *)base;                                                    \
         L##s sl = {bb, bb + n};                                               \
@@ -120,43 +120,52 @@ static void JABCHitFree(JSRuntime *rt, void *opaque, void *ptr) { free(ptr); }
         /* DOG-027: one cap, and above it the leaf just throws */               \
         if (N > HIT_MAX_RUNS)                                                   \
             JABC_THROW("too many index runs: drop them and re-derive the index");\
+        /* QJAB-005: COLLECT the runs, then unwrap — an element getter is JS, \
+           and JS mid-loop can transfer() a run already taken.  rv[] holds the \
+           refs until the last read of ent[] below. */                          \
+        JSValue rv[HIT_MAX_RUNS];                                               \
+        u8 const *rb[HIT_MAX_RUNS];                                             \
+        size_t rn[HIT_MAX_RUNS];                                                \
+        if (!JABCRunsOf(rb, rn, rv, N, ctx, argv[0])) JABC_FAIL;                \
         L##cs ent[HIT_MAX_RUNS];                                                \
         size_t total = 0;                                                       \
         for (size_t i = 0; i < N; i++) {                                        \
-            JSValue el = JS_GetPropertyUint32(ctx, argv[0], (uint32_t)i);       \
-            u8 *bb[4] = {};                                                     \
-            b8 ok = JABCDataOf(bb, ctx, el);                                    \
-            JS_FreeValue(ctx, el);                                              \
-            if (!ok) JABC_FAIL;                                                 \
-            u8 const *const *b = u8bDataC(bb);                                  \
-            ent[i][0] = (const L *)b[0];                                        \
-            ent[i][1] = (const L *)b[1];                                        \
-            total += (size_t)$len(b) / sizeof(L);                               \
+            ent[i][0] = (const L *)rb[i];                                       \
+            ent[i][1] = (const L *)(rb[i] + rn[i]);                             \
+            total += rn[i] / sizeof(L);                                         \
         }                                                                       \
         /* destination given (argv[1]) -> write in place, return the count; the \
            caller's container is sized to the Sum upper bound and trimmed on    \
            close (abc.book). */                                                 \
         if (argc >= 2 && JS_GetTypedArrayType(argv[1]) >= 0) {                  \
             u8 *db4[4] = {};                                                    \
-            if (!JABCDataOf(db4, ctx, argv[1])) JABC_FAIL;                      \
+            if (!JABCDataOf(db4, ctx, argv[1])) {                               \
+                JABCRunsFree(rv, N, ctx);                                       \
+                JABC_FAIL;                                                      \
+            }                                                                   \
             u8 *const *d = u8bData(db4);                                        \
-            if ((size_t)$len(d) < total * sizeof(L))                            \
-                JABC_THROW("merge: out too small");                             \
+            ok64 mo = OK;                                                       \
+            L *db = (L *)d[0];                                                  \
             /* JAB-009: ABC-015 drains take a BOUNDED slice (head advances past \
                the output), not a bare cursor */                                \
-            L *db = (L *)d[0];                                                  \
             L##s dst = {db, (L *)d[1]};                                         \
-            if (N > 0) {                                                        \
+            if ((size_t)$len(d) < total * sizeof(L)) {                          \
+                mo = NOROOM;                                                    \
+            } else if (N > 0) {                                                 \
                 L##css heap = {ent, ent + N};                                   \
-                ok64 mo = isect ? HIT##L##Intersect(heap, dst, N)               \
-                                : HIT##L##Merge(heap, dst);                     \
-                if (mo != OK) JABC_THROW("merge: out too small");               \
+                mo = isect ? HIT##L##Intersect(heap, dst, N)                    \
+                           : HIT##L##Merge(heap, dst);                          \
             }                                                                   \
+            JABCRunsFree(rv, N, ctx);                                           \
+            if (mo != OK) JABC_THROW("merge: out too small");                   \
             return JS_NewFloat64(ctx, (double)(size_t)(dst[0] - db));           \
         }                                                                       \
         size_t bytes = total * sizeof(L);                                       \
         u8 *mem = (u8 *)malloc(bytes + 1);   /* +1: malloc(0) is not a buffer */\
-        if (mem == NULL) JABC_THROW("merge: out of memory");                    \
+        if (mem == NULL) {                                                      \
+            JABCRunsFree(rv, N, ctx);                                           \
+            JABC_THROW("merge: out of memory");                                 \
+        }                                                                       \
         L *ob = (L *)mem;                                                       \
         /* JAB-009: bounded ABC-015 drain slice; total is the exact upper bound*/\
         L##s op = {ob, ob + total};                                             \
@@ -165,10 +174,12 @@ static void JABCHitFree(JSRuntime *rt, void *opaque, void *ptr) { free(ptr); }
             ok64 mo = isect ? HIT##L##Intersect(heap, op, N)                    \
                             : HIT##L##Merge(heap, op);                          \
             if (mo != OK) {                                                     \
+                JABCRunsFree(rv, N, ctx);                                       \
                 free(mem);                                                      \
                 JABC_THROW("merge: out too small");                             \
             }                                                                   \
         }                                                                       \
+        JABCRunsFree(rv, N, ctx);                                               \
         size_t cnt = (size_t)(op[0] - ob);                                      \
         JSValue whole = JABCBytesNoCopy(ctx, mem, bytes, JABCHitFree, NULL);    \
         if (JS_IsException(whole)) {                                            \

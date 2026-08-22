@@ -13,11 +13,15 @@
 //  zip._deflate(src, out, outOff) -> bytes produced into out at outOff.
 static JABC_FN(JABCzipDeflate) {
     if (argc < 3) JABC_THROW("zip._deflate(src, out, outOff)");
+    //  QJAB-005: the offset is coerced BEFORE the views are unwrapped, so the
+    //  bases below are the last thing this leaf takes from JS.
+    u64 off = 0;
+    if (!JABCu64Of(&off, ctx, argv[2])) JABC_FAIL;
     u8 *srcb[4] = {};
     u8 *outb[4] = {};
     if (!JABCDataOf(srcb, ctx, argv[0])) JABC_FAIL;
     if (!JABCIdleOf(outb, ctx, argv[1])) JABC_FAIL;
-    if (!JABCBufFed(outb, ctx, argv[2])) JABC_FAIL;  //  DATA = [0,off)
+    if (!JABCBufFedAt(outb, ctx, off)) JABC_FAIL;  //  DATA = [0,off)
     size_t before = u8bDataLen(outb);
     if (ZINFDeflate(u8bIdle(outb), u8bDataC(srcb)) != OK)
         JABC_THROW("zip.deflate: failed (out too small?)");
@@ -28,11 +32,15 @@ static JABC_FN(JABCzipDeflate) {
 //  Throws NOROOM-style on a too-small out so the JS sugar grows and retries.
 static JABC_FN(JABCzipInflate) {
     if (argc < 3) JABC_THROW("zip._inflate(src, out, outOff)");
+    //  QJAB-005: coerce the offset FIRST — the sentinel write below and ZINF
+    //  both go through the base the two unwraps take.
+    u64 off = 0;
+    if (!JABCu64Of(&off, ctx, argv[2])) JABC_FAIL;
     u8 *srcb[4] = {};
     u8 *outb[4] = {};
     if (!JABCDataOf(srcb, ctx, argv[0])) JABC_FAIL;
     if (!JABCIdleOf(outb, ctx, argv[1])) JABC_FAIL;
-    if (!JABCBufFed(outb, ctx, argv[2])) JABC_FAIL;  //  DATA = [0,off)
+    if (!JABCBufFedAt(outb, ctx, off)) JABC_FAIL;  //  DATA = [0,off)
     size_t before = u8bDataLen(outb);
     size_t room = u8bIdleLen(outb);
     u8 *head = u8bIdle(outb)[0];

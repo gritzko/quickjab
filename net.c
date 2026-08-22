@@ -199,16 +199,20 @@ static JABC_FN(JABCDgramRecv) {
 static JABC_FN(JABCDgramSend) {
     (void)this_val;
     if (argc < 4) JABC_THROW("dgram._send(fd, u8, host, port)");
+    //  QJAB-005: EVERY scalar arg is coerced BEFORE the view is unwrapped —
+    //  the port's valueOf is JS, and JS mid-leaf can transfer() the payload
+    //  out from under the sendto below (_recv/_send have the same shape).
     int fd = 0;  //  QJAB-011: NaN/Inf/negative is not fd 0
     if (!JABCFdOf(&fd, ctx, argv[0])) JABC_FAIL;
-    u8 *tab[4] = {};
-    if (!JABCDataOf(tab, ctx, argv[1])) JABC_FAIL;
     char host[NETmaxhost] = "", port[NETmaxserv] = "";
     if (JABCUri(host, sizeof(host), ctx, argv[2]) == 0)
         JABC_THROW("dgram._send: bad host");
-    i32 p = 0;
-    if (JS_ToInt32(ctx, &p, argv[3]) < 0) JABC_FAIL;
-    snprintf(port, sizeof(port), "%d", p);
+    u64 p = 0;
+    if (!JABCu64Of(&p, ctx, argv[3])) JABC_FAIL;
+    if (p > 65535) JABC_THROW("dgram._send: bad port");
+    snprintf(port, sizeof(port), "%d", (int)p);
+    u8 *tab[4] = {};
+    if (!JABCDataOf(tab, ctx, argv[1])) JABC_FAIL;
     struct addrinfo hints = {}, *res = NULL;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;

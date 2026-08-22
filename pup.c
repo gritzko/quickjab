@@ -56,6 +56,11 @@ typedef struct {
     Bkv64 pups;
     b8 live;
     b8 rw;
+    //  QJAB-005: a range scan calls back into JS while it iterates the
+    //  handle's MAPPINGS.  put/commit/drop/close seal, unlink and munmap
+    //  those very runs, so they are barred for the length of the scan — the
+    //  callback cannot pull the memory out from under the heap it drains.
+    b8 busy;
     //  DOG-032: the memtable's size, fixed at open — `pages` whole OS pages
     //  going down to dog, `mem` the row capacity JS reads back as `idx.mem`.
     u32 pages;
@@ -66,6 +71,10 @@ static pupslot JABC_PUPS[PUP_MAX_OPEN];
 
 //  The ONE plain-words error for a stack past the cap (never a bare C code).
 #define PUP_TOOMANY "too many index runs: drop them and re-derive the index"
+
+//  QJAB-005: what a range callback is told when it tries to mutate the very
+//  handle being scanned.
+#define PUP_BUSY "this index is being scanned: finish the range first"
 
 //  DOG-032: a memtable is one mapping and one collapse scratch, so 256 MiB of
 //  pages is the damage backstop — a sane bulk run asks for one or two.
@@ -329,6 +338,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         }                                                                      \
         s->live = YES;                                                         \
         s->rw = rw;                                                            \
+        s->busy = NO;                                                          \
         s->pages = (u32)pages;                                                 \
         s->mem = (u64)(pages * page / sizeof(L));                              \
         JABC_PUPCURN_##L[h] = 0;                                               \
@@ -339,6 +349,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         pupslot *s = JABCPupSlot(ctx, argc, argv);                             \
         if (!s || argc < 4) JABC_THROW("_pup_" #L "_put(h, dir, ext, k[, v])");\
         if (!s->rw) JABC_THROW("this index is open read-only");                \
+        if (s->busy) JABC_THROW(PUP_BUSY); /* QJAB-005 */                      \
         PUP_PATHS(1);                                                          \
         L row = {};                                                            \
         if (!PUP_RD_##L(&row, ctx, argv[3])) JABC_FAIL;                        \
@@ -356,6 +367,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         if (!s || argc < 3)                                                    \
             JABC_THROW("_pup_" #L "_commit(h, dir, ext[, durable])");          \
         if (!s->rw) JABC_THROW("this index is open read-only");                \
+        if (s->busy) JABC_THROW(PUP_BUSY); /* QJAB-005 */                      \
         PUP_PATHS(1);                                                          \
         /*  DOG-032: a bulk run seals with durable=false and ends in ONE       \
             durable commit; absent (jab's binding) IS durable. */              \
@@ -425,6 +437,10 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         L##csp slots[HIT_MAX_RUNS];                                            \
         L##csps ph;                                                            \
         if (HIT##L##Load(ph, slots, heap) != OK) JABC_THROW(PUP_TOOMANY);      \
+        /*  QJAB-005: ent[] points INTO the handle's mappings and the cb below \
+            is arbitrary JS — bar the leaves that unmap them for the scan. */  \
+        b8 was = s->busy;                                                      \
+        s->busy = YES;                                                         \
         while (!$empty(ph)) {                                                  \
             L const *top = (*ph[0])[0];                                        \
             L val = *top;                                                      \
@@ -437,11 +453,15 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
             JSValue r = JS_Call(ctx, argv[3], JS_UNDEFINED, 1,                 \
                                 (JSValueConst *)&el);                          \
             JS_FreeValue(ctx, el);                                             \
-            if (JS_IsException(r)) JABC_FAIL;                                  \
+            if (JS_IsException(r)) {                                           \
+                s->busy = was;                                                 \
+                JABC_FAIL;                                                     \
+            }                                                                  \
             b8 stop = JABCPupEnough(ctx, r);                                   \
             JS_FreeValue(ctx, r);                                              \
             if (stop) break;                                                   \
         }                                                                      \
+        s->busy = was;                                                         \
         JABC_UNDEF;                                                            \
     }                                                                          \
                                                                                \
@@ -517,6 +537,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
         pupslot *s = JABCPupSlot(ctx, argc, argv);                             \
         if (!s || argc < 3) JABC_THROW("_pup_" #L "_drop(h, dir, ext[, i])");  \
         if (!s->rw) JABC_THROW("this index is open read-only");                \
+        if (s->busy) JABC_THROW(PUP_BUSY); /* QJAB-005 */                      \
         PUP_PATHS(1);                                                          \
         JABC_PUPCURN_##L[(size_t)(s - JABC_PUPS)] = 0; /* the cursor's runs */ \
         if (argc < 4 || JS_IsUndefined(argv[3])) {                             \
@@ -536,6 +557,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
     static JABC_FN(jpup_##L##_close) {                                         \
         pupslot *s = JABCPupSlot(ctx, argc, argv);                             \
         if (!s) JABC_THROW("_pup_" #L "_close(h)");                            \
+        if (s->busy) JABC_THROW(PUP_BUSY); /* QJAB-005 */                      \
         size_t h = (size_t)(s - JABC_PUPS);                                    \
         DOGPupClose(s->pups);                                                  \
         zero(s->pups);                                                         \
