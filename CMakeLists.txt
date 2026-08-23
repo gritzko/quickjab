@@ -197,6 +197,12 @@ if(EXISTS ${JAB_TEST}/qjab006.js)
 endif()
 add_test(NAME JABCnet COMMAND quickjab ${JAB_TEST}/net.js)
 add_test(NAME JABCnetGrow COMMAND quickjab ${JAB_TEST}/netgrow.js)
+# QJAB-012: a peer that vanishes mid-response must close ONE socket, not the
+# loop — the EPIPE from _flush used to escape pol.run.  Gated like JABCqjab011.
+if(EXISTS ${JAB_TEST}/qjab012.js)
+    add_test(NAME JABCqjab012 COMMAND quickjab ${JAB_TEST}/qjab012.js)
+    set_tests_properties(JABCqjab012 PROPERTIES TIMEOUT 20)
+endif()
 # QJAB-004: the abc/HTTP lexer leaves — heads, partial feeds, a loopback over
 # net.  Gated like JABCigno: the .js sits in the SHARED test repo (lands apart).
 if(EXISTS ${JAB_TEST}/http.js)
