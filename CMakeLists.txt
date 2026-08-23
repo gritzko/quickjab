@@ -142,6 +142,12 @@ add_test(NAME JABChit COMMAND quickjab ${JAB_TEST}/hit.js)
 add_test(NAME JABCindex COMMAND quickjab ${JAB_TEST}/index.js)
 # DOG-032: the sized memtable — same rows, same answers at 4 KiB and 1 MiB.
 add_test(NAME JABCpupMem COMMAND quickjab ${JAB_TEST}/pupmem.js)
+# DOG-046: two rw abc.index handles on ONE dir — the per-handle memtable and
+# the pre-seal re-scan.  Gated like JABCqjab006: the .js lives in the SHARED
+# test repo, which lands apart from this one.
+if(EXISTS ${JAB_TEST}/dog046.js)
+    add_test(NAME JABCdog046 COMMAND quickjab ${JAB_TEST}/dog046.js)
+endif()
 add_test(NAME JABChunk COMMAND quickjab ${JAB_TEST}/hunk.js)
 add_test(NAME JABCtok COMMAND quickjab ${JAB_TEST}/tok.js)
 add_test(NAME JABCuri COMMAND quickjab ${JAB_TEST}/uri.js)
