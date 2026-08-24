@@ -230,7 +230,7 @@ static JABC_FN(JABCdeltEncode) {
 //  _pack_scan(buf, dataLen, out, base, delta) -> entry count
 //  GIT-010: pure marshalling over the dog/git scan-emit PIDXScan.  Walk the
 //  whole pack [0, dataLen), resolve+git-sha each object, and drop one wh128
-//  `(key=hashlet60|type, val=offset)` entry per object STRAIGHT into the
+//  `(key=type|hashlet60, val=offset)` entry per object STRAIGHT into the
 //  caller's region `out` (a Buf's IDLE), returning the entry count.  Guards,
 //  ALL before any write: out must be 8-byte aligned and hold count*16 bytes
 //  worst case, so a partial scan never half-fills a reused buffer.
