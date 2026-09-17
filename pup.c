@@ -3,7 +3,7 @@
 //  ladder, all of it in C.  JS holds a handle id plus `dir`/`ext` strings and
 //  does nothing but marshalling; the ladder never crosses the boundary.
 //
-//  Leaves (per lane kv64 / wh128 / u64):
+//  Leaves (per lane kv64 / wh128 / u64 / u32):
 //    _pup_<lane>_open(dir, ext, mode, mem) -> handle (a small integer)
 //    _pup_<lane>_put(h, dir, ext, k[, v])  -> undefined  (rw only)
 //    _pup_<lane>_commit(h, dir, ext, dur)  -> undefined  (rw only)
@@ -42,6 +42,11 @@
 #include "abc/HITx.h"
 #undef X
 #define X(M, name) M##u64##name
+#include "abc/HITx.h"
+#undef X
+//  QJAB-013: the u32 lane — hit.c instantiates the same HIT there, in its
+//  own TU, so the two never clash.
+#define X(M, name) M##u32##name
 #include "abc/HITx.h"
 #undef X
 
@@ -187,6 +192,19 @@ static b8 JABCPupWh128(wh128 *v, JSContext *ctx, JSValueConst arg) {
 static b8 JABCPupU64(u64 *v, JSContext *ctx, JSValueConst arg) {
     return JABCBigU64Of(v, ctx, arg);
 }
+//  QJAB-013: u32 speaks NUMBERS — a u32 fits a JS integer exactly, so the
+//  gate is its own and names the lane.
+static b8 JABCPupU32(u32 *v, JSContext *ctx, JSValueConst arg) {
+    double d = 0;
+    if (!JABCScalar(ctx, arg)) return NO;  //  QJAB-005: no valueOf re-entry
+    if (JS_ToFloat64(ctx, &d, arg) < 0) return NO;
+    if (!(d >= 0) || d > 4294967295.0 || d != (double)(u32)d) {
+        JABCThrowStr(ctx, "the u32 index takes a whole number under 2^32");
+        return NO;
+    }
+    *v = (u32)d;
+    return YES;
+}
 
 //  cb's return is a stop signal: false / "enough" stops, anything else goes on
 //  (the io.readdir(path, cb) contract).  Borrows `r`.
@@ -220,26 +238,33 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
 #define PUP_RD_kv64 JABCPupKv64
 #define PUP_RD_wh128 JABCPupWh128
 #define PUP_RD_u64 JABCPupU64
+#define PUP_RD_u32 JABCPupU32
 
 #define PUP_PUTVAL_kv64 \
     if (!JABCBigU64Of(&row.val, ctx, argv[4])) JABC_FAIL
 #define PUP_PUTVAL_wh128 \
     if (!JABCBigU64Of(&row.val, ctx, argv[4])) JABC_FAIL
 #define PUP_PUTVAL_u64 ((void)0)
+#define PUP_PUTVAL_u32 ((void)0)
 
 #define PUP_EMIT_kv64 \
     JABCPair(ctx, JABCBigU64(ctx, top->key), JABCBigU64(ctx, top->val))
 #define PUP_EMIT_wh128 \
     JABCPair(ctx, JABCBigU64(ctx, top->key), JABCBigU64(ctx, top->val))
 #define PUP_EMIT_u64 JABCBigU64(ctx, *top)
+//  QJAB-013: a Number back, untouched — a BigInt here would break the
+//  range callback's contract on the u32 lane.
+#define PUP_EMIT_u32 JS_NewFloat64(ctx, (double)*top)
 
 #define PUP_GETV_kv64 JABCBigU64(ctx, pos->val)
 #define PUP_GETV_wh128 JABCBigU64(ctx, pos->val)
 #define PUP_GETV_u64 JABCBigU64(ctx, *pos)
+#define PUP_GETV_u32 JS_NewFloat64(ctx, (double)*pos)
 
 #define PUP_KEYEQ_kv64 (pos->key == needle.key)
 #define PUP_KEYEQ_wh128 (pos->key == needle.key)
 #define PUP_KEYEQ_u64 (*pos == needle)
+#define PUP_KEYEQ_u32 (*pos == needle)
 
 //  DOG-032: PUP_STABLE_x — the lane needs the STABLE sort at ANY size.  kv64Z
 //  is KEY-only, so equal rows differ and newest-wins rides arrival order;
@@ -248,6 +273,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
 #define PUP_STABLE_kv64 YES
 #define PUP_STABLE_wh128 NO
 #define PUP_STABLE_u64 NO
+#define PUP_STABLE_u32 NO
 
 //  --- per-lane leaves -------------------------------------------------------
 #define PUP_LEAVES(L)                                                          \
@@ -714,6 +740,7 @@ static b8 JABCPupEnough(JSContext *ctx, JSValueConst r) {
 PUP_LEAVES(kv64)
 PUP_LEAVES(wh128)
 PUP_LEAVES(u64)
+PUP_LEAVES(u32)
 
 //  DOG-032: the memtable's row capacity — ONE leaf for every lane, since the
 //  slot holds it and the rows were already page-rounded at open.
@@ -741,6 +768,7 @@ ok64 JABCInstallPup(JSContext *ctx, JSValueConst global) {
     PUP_REG(kv64);
     PUP_REG(wh128);
     PUP_REG(u64);
+    PUP_REG(u32);
     JABC_API_FN(abc, "_pup_mem", jpup_mem);
     JABC_API_END(abc);
     return OK;
