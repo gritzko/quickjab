@@ -201,6 +201,13 @@ endif()
 if(EXISTS ${JAB_TEST}/qjab006.js)
     add_test(NAME JABCqjab006 COMMAND quickjab ${JAB_TEST}/qjab006.js)
 endif()
+# QJAB-014: io.fork/io.exit — a forked child keeps the parent's open lanes and
+# leaves through _exit, running no parent teardown.  Gated like JABCqjab011:
+# the .js lives in the SHARED test repo (lands apart).
+if(EXISTS ${JAB_TEST}/fork.js)
+    add_test(NAME JABCfork COMMAND quickjab ${JAB_TEST}/fork.js)
+    set_tests_properties(JABCfork PROPERTIES TIMEOUT 20)
+endif()
 add_test(NAME JABCnet COMMAND quickjab ${JAB_TEST}/net.js)
 add_test(NAME JABCnetGrow COMMAND quickjab ${JAB_TEST}/netgrow.js)
 # QJAB-012: a peer that vanishes mid-response must close ONE socket, not the

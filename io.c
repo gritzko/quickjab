@@ -2,6 +2,7 @@
 //  cheat-sheet.  fds are plain numbers; buffers are JS-owned typed arrays.
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -980,6 +981,32 @@ static JABC_FN(JABCioReap) {
     return obj;
 }
 
+//  QJAB-014: io.fork() -> pid.  A fork(2) with NO exec, so the child keeps the
+//  parent's memory and open handles (the ODB, the abc.index lanes) and can do a
+//  stripe of the work in place (BEE-072).  0 in the child, the child's pid in
+//  the parent; a child leaves ONLY through io.exit below.
+static JABC_FN(JABCioFork) {
+    (void)argv;
+    (void)argc;
+    pid_t pid = fork();
+    if (pid < 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "io.fork(): %s", strerror(errno));
+        JABC_THROW(msg);
+    }
+    return JS_NewFloat64(ctx, (double)pid);
+}
+
+//  QJAB-014: io.exit(code) -> never returns.  _exit(2) over exit(3): the
+//  teardown main.c runs on the way out (JSClose, JABCUninstallIo, the ulog
+//  flush) belongs to the parent, and a forked child holds only copies of those
+//  handles, so running it there would free the parent's world twice.
+static JABC_FN(JABCioExit) {
+    int code = 0;
+    if (argc > 0 && !JABCInt(&code, ctx, argv[0])) JABC_FAIL;
+    _exit(code & 0xff);
+}
+
 //  io.isatty(fd) -> bool  (is the fd a terminal? — the color-vs-plain gate)
 static JABC_FN(JABCioIsatty) {
     if (argc < 1) JABC_THROW("io.isatty(fd)");
@@ -1046,6 +1073,8 @@ ok64 JABCInstallIo(JSContext *ctx, JSValueConst global) {
     JABC_API_FN(io, "spawn", JABCioSpawn);
     JABC_API_FN(io, "spawnFds", JABCioSpawnFds);
     JABC_API_FN(io, "reap", JABCioReap);
+    JABC_API_FN(io, "fork", JABCioFork);
+    JABC_API_FN(io, "exit", JABCioExit);
     JABC_API_FN(io, "isatty", JABCioIsatty);
     JABC_API_FN(io, "cwd", JABCioCwd);
     JABC_API_FN(io, "chdir", JABCioChdir);
